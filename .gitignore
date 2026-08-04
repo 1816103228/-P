@@ -1,0 +1,25 @@
+# 密钥与环境
+.env
+.env.local
+
+# Reasonix 工具元数据
+.reasonix/
+
+# 数据与缓存
+data/
+__pycache__/
+*.pyc
+*.pyo
+
+# Python 虚拟环境
+.venv/
+venv/
+env/
+
+# 日志
+logs/
+*.log
+
+# 编辑器
+.idea/
+.vscode/

@@ -1,0 +1,27 @@
+services:
+  web:
+    build: .
+    ports:
+      - "8501:8501"
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DISABLE_SCHEDULER: "0"
+    volumes:
+      - interview-data:/app/data
+    depends_on:
+      - voice
+
+  voice:
+    build: .
+    command: uvicorn voice_server:app --host 0.0.0.0 --port 8765
+    ports:
+      - "8765:8765"
+    environment:
+      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      VOICE_HOST: 0.0.0.0
+      VOICE_PORT: 8765
+    volumes:
+      - interview-data:/app/data
+
+volumes:
+  interview-data:

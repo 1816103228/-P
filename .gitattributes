@@ -1,0 +1,7 @@
+# 统一换行符：shell 脚本强制 LF，Windows 批处理保持 CRLF
+* text=auto
+*.sh text eol=lf
+*.bat text eol=crlf
+*.py text eol=lf
+*.js text eol=lf
+*.md text eol=lf

@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "interview-coach-xiaop"
+version = "0.1.0"
+description = "基于 DeepSeek 的 Python/后端面试模拟与辅导 Agent（面试官小P）"
+readme = "README.md"
+requires-python = ">=3.10"
+dependencies = [
+    "streamlit>=1.36,<2",
+    "requests>=2.31,<3",
+    "beautifulsoup4>=4.12,<5",
+    "lxml>=5.0,<6",
+    "apscheduler>=3.10,<4",
+    "openai>=1.40,<3",
+    "python-dotenv>=1.0,<2",
+    "fastapi>=0.110,<1",
+    "uvicorn>=0.30,<1",
+    "edge-tts>=6.1,<8",
+]
+
+[tool.setuptools]
+packages = ["app", "app.agent", "app.crawler", "app.ui", "app.tests"]
+py-modules = ["voice_server"]

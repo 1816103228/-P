@@ -1,0 +1,41 @@
+"""汇总抓取入口：遍历所有适配器抓取并入库。
+
+用法：
+    python -m app.crawler.run                # 全量抓取
+    python -m app.crawler.run --limit 2      # 每源限 2 页/条（调试用）
+"""
+import argparse
+
+from app.crawler import leetcode, mianshiya, nowcoder
+
+#: 已注册的数据源适配器（新增源在此登记即可）
+ADAPTERS = [
+    mianshiya.MianShiYaAdapter(),
+    leetcode.LeetCodeAdapter(),
+    nowcoder.NowCoderAdapter(),  # 占位，暂返回空
+]
+
+
+def crawl_all(limit_per_source: int | None = None) -> list[dict]:
+    """遍历所有适配器抓取入库，返回各源统计；limit 透传给每个适配器。"""
+    results = []
+    for adapter in ADAPTERS:
+        print(f"--- 正在抓取: {adapter.name} ---")
+        try:
+            stats = adapter.fetch_and_store(limit=limit_per_source)
+        except Exception as e:
+            stats = {"source": adapter.name, "error": str(e)}
+        results.append(stats)
+        print(stats)
+    return results
+
+
+if __name__ == "__main__":
+    from app import db
+
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--limit", type=int, default=None, help="每源最多抓取条数（调试）")
+    args = parser.parse_args()
+
+    db.init_db()
+    crawl_all(limit_per_source=args.limit)
