@@ -266,3 +266,7 @@ python -m unittest discover -s app/tests -v
 - **牛客网**：反爬较重（登录墙 + 风控），当前为占位适配器，待验证稳定抓取后再接入。
 
 如需新增数据源，继承 `app/crawler/base.py` 中的 `SourceAdapter`，实现 `fetch()`，并在 `app/crawler/run.py` 的 `ADAPTERS` 列表登记即可。
+
+## License
+
+[MIT](LICENSE)
