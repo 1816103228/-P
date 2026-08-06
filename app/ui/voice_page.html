@@ -137,10 +137,10 @@ if(!V){V=w.__voiceState={
 };}
 
 var VAD_THRESHOLD=__VAD_THRESHOLD__;
-var VAD_HITS=4;            // 连续超过阈值次数（约 240ms）才打断，过滤瞬时噪声
-var VAD_ECHO_FACTOR=2.2;   // 必须明显高于本段播报回声基准，才认为是真人在说话
+var VAD_HITS=3;            // 连续超过阈值次数（约 180ms）才打断，过滤瞬时噪声
+var VAD_ECHO_FACTOR=1.8;   // 必须明显高于本段播报回声基准，才认为是真人在说话
 var VAD_CALIB_MS=900;      // 播报开头测量回声基准的时间窗（毫秒）
-var VAD_QUIET_FRAMES=3;    // 校准后还需连续安静几帧才允许打断（防止自己话尾误触发）
+var VAD_QUIET_FRAMES=2;    // 校准后还需连续安静几帧才允许打断（防止自己话尾误触发）
 
 function setStatus(t,busy){
   st.textContent=t;
@@ -355,11 +355,15 @@ function vadLoop(){
     var rms=Math.sqrt(sum/V.vadData.length);
     if(V.speaking){
       V.echoTicks++;
-      // 持续跟踪回声/环境噪声基准（快落慢升的噪声底），不受瞬时尖峰影响
-      if(rms>V.echoRef){V.echoRef+=0.08*(rms-V.echoRef);}else{V.echoRef=rms;}
-      if(V.echoTicks*60>=VAD_CALIB_MS){
+      if(V.echoTicks*60<VAD_CALIB_MS){
+        // 校准窗口：取播报期间麦克风 RMS 最大值作为回声/噪声基准，
+        // 避免"基准跟着播报音量涨，人声反而追不上"导致无法打断
+        if(rms>V.echoRef)V.echoRef=rms;
+      }else{
+        // 校准完成后基准只允许极缓慢上漂（适应环境噪音变响），
+        // 不追逐人声、也不因句间静音回落，打断阈值保持稳定
+        if(rms>V.echoRef)V.echoRef+=0.005*(rms-V.echoRef);
         var limit=Math.max(VAD_THRESHOLD,V.echoRef*VAD_ECHO_FACTOR);
-        // 校准完成后还需先安静片刻再武装，避免"自己话还没说完"误打断
         if(rms<=limit){V.quietTicks++;}else{V.quietTicks=0;}
         if(V.quietTicks>=VAD_QUIET_FRAMES){
           if(rms>limit){V.vadHits++;}else{V.vadHits=0;}

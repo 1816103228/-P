@@ -14,6 +14,8 @@ load_dotenv(BASE_DIR / ".env", override=True)
 DEEPSEEK_API_KEY = os.getenv("DEEPSEEK_API_KEY", "").strip()
 DEEPSEEK_BASE_URL = os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com").strip()
 DEEPSEEK_MODEL = os.getenv("DEEPSEEK_MODEL", "deepseek-chat").strip()
+# 总结报告使用的模型（可选）：留空则用 DEEPSEEK_MODEL；如 deepseek-reasoner 更深入但更慢更贵
+REPORT_MODEL = os.getenv("REPORT_MODEL", "").strip()
 LLM_TIMEOUT_SECONDS = float(os.getenv("LLM_TIMEOUT_SECONDS", "120"))
 LLM_MAX_RETRIES = int(os.getenv("LLM_MAX_RETRIES", "3"))
 

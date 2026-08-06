@@ -82,6 +82,8 @@ def _render_review() -> None:
     for r in sessions[:5]:
         score = f"{r['score']}/100" if r["score"] is not None else "—"
         kind = "定制" if r["source"] == "定制" else "题库"
+        if r["persona"]:
+            kind += f" · {r['persona']}"
         ts = (r["started_at"] or "")[5:16].replace("T", " ")
         st.markdown(
             f'<div class="rev-row"><span class="rev-score">{score}</span>'

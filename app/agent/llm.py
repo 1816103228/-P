@@ -66,9 +66,10 @@ def _build_kwargs(
     temperature: float,
     max_tokens: int,
     response_format: dict | None,
+    model: str | None = None,
 ) -> dict:
     kwargs = {
-        "model": config.DEEPSEEK_MODEL,
+        "model": model or config.DEEPSEEK_MODEL,
         "messages": messages,
         "temperature": temperature,
         "max_tokens": max_tokens,
@@ -84,6 +85,7 @@ def chat(
     max_tokens: int = 2048,
     max_retries: int | None = None,
     response_format: dict | None = None,
+    model: str | None = None,
 ) -> str:
     """发送对话消息，失败自动重试，返回完整回复文本。"""
     max_retries = max_retries if max_retries is not None else config.LLM_MAX_RETRIES
@@ -92,7 +94,7 @@ def chat(
         try:
             start = time.perf_counter()
             resp = get_client().chat.completions.create(
-                **_build_kwargs(messages, temperature, max_tokens, response_format)
+                **_build_kwargs(messages, temperature, max_tokens, response_format, model)
             )
             text = (resp.choices[0].message.content or "").strip()
             usage = getattr(resp, "usage", None)
@@ -126,6 +128,7 @@ def chat_stream(
     max_tokens: int = 2048,
     max_retries: int | None = None,
     response_format: dict | None = None,
+    model: str | None = None,
 ):
     """流式对话：逐段 yield 回复文本。
 
@@ -136,7 +139,7 @@ def chat_stream(
     started = False
     for attempt in range(max_retries):
         try:
-            kwargs = _build_kwargs(messages, temperature, max_tokens, response_format)
+            kwargs = _build_kwargs(messages, temperature, max_tokens, response_format, model)
             resp = get_client().chat.completions.create(stream=True, **kwargs)
             for chunk in resp:
                 delta = chunk.choices[0].delta.content

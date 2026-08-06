@@ -11,14 +11,15 @@ import html
 import logging
 import os
 import threading
+from datetime import datetime
 
 import streamlit as st
 
-from app import config
 import app.db as db
+from app import config
 from app.agent.coach import InterviewSession, generate_interview_questions
 from app.agent.llm import is_api_key_configured
-from app.prompts import MOCK_GREETING
+from app.prompts import MOCK_GREETING, PERSONAS
 from app.scheduler import setup_logging, start_scheduler
 from app.ui.components import avatar_svg, render_sidebar
 
@@ -169,7 +170,9 @@ if "_force_mode" in st.session_state:
 
 
 def start_mock():
-    st.session_state.session = InterviewSession("mock")
+    st.session_state.session = InterviewSession(
+        "mock", persona=st.session_state.get("persona", "")
+    )
     st.session_state.history = [("assistant", MOCK_GREETING)]
     st.session_state.mode = "模拟面试"
 
@@ -200,7 +203,11 @@ def custom_interview_dialog():
                 qs = []
         if qs:
             st.session_state.session = InterviewSession(
-                "mock", questions=qs, job_title=job_title, jd=jd
+                "mock",
+                questions=qs,
+                job_title=job_title,
+                jd=jd,
+                persona=st.session_state.get("persona", ""),
             )
             st.session_state.history = [
                 (
@@ -216,27 +223,53 @@ def custom_interview_dialog():
 # ---- 对话框：题库浏览 ----
 @st.dialog("📚 题库")
 def question_bank_dialog():
+    with st.expander("➕ 添加自定义题"):
+        cq_title = st.text_input("题干", key="cq_title", placeholder="如：如何设计一个限流组件？")
+        cq_answer = st.text_area("参考答案（选填）", key="cq_answer", height=80)
+        cq_tags = st.text_input("标签（逗号分隔，选填）", key="cq_tags", placeholder="如：Redis,限流")
+        cq_diff = st.selectbox("难度", ["简单", "中等", "困难"], key="cq_diff")
+        cq_company = st.text_input("公司（选填）", key="cq_company", placeholder="如：字节跳动")
+        if st.button("添加题目", type="primary", use_container_width=True):
+            if not cq_title.strip():
+                st.warning("请填写题干")
+            else:
+                db.upsert_question(
+                    source="custom",
+                    title=cq_title.strip(),
+                    answer=cq_answer.strip() or None,
+                    tags=[t.strip() for t in cq_tags.split(",") if t.strip()] or None,
+                    difficulty=cq_diff,
+                    company=cq_company.strip() or None,
+                )
+                st.success("已添加到题库")
+                st.rerun()
+
     srcs = ["全部"] + [r["source"] for r in db.count_by_source()]
-    c1, c2, c3 = st.columns(3)
+    companies = ["全部"] + db.list_companies()
+    c1, c2, c3, c4 = st.columns(4)
     with c1:
         src_filter = st.selectbox("来源", srcs, key="qb_src")
     with c2:
         diff_filter = st.selectbox("难度", ["全部", "简单", "中等", "困难"], key="qb_diff")
     with c3:
+        company_filter = st.selectbox("公司", companies, key="qb_company")
+    with c4:
         kw = st.text_input("关键词", placeholder="如 Redis / 索引", key="qb_kw")
     q_rows = db.search_questions(
         source=None if src_filter == "全部" else src_filter,
         difficulty=None if diff_filter == "全部" else diff_filter,
+        company=None if company_filter == "全部" else company_filter,
         keyword=kw or None,
         limit=30,
     )
     if not q_rows:
         st.caption("暂无匹配的题目")
     for r in q_rows:
-        c = st.columns([4, 1], vertical_alignment="center")
-        c[0].markdown(
-            f"**{r['title']}**\n\n`{r['source']}` · `{r['difficulty'] or '难度未知'}`"
-        )
+        c = st.columns([3, 1, 1], vertical_alignment="center")
+        meta = f"`{r['source']}` · `{r['difficulty'] or '难度未知'}`"
+        if r["company"]:
+            meta += f" · `{r['company']}`"
+        c[0].markdown(f"**{r['title']}**\n\n{meta}")
         if c[1].button("出这道题", key=f"qb_ask_{r['id']}"):
             sess = st.session_state.session
             if sess is None:
@@ -252,6 +285,13 @@ def question_bank_dialog():
                 st.session_state.history.append(("assistant", reply))
                 st.session_state["_force_mode"] = "模拟面试"
                 st.rerun()
+        fav_label = "★ 已藏" if db.is_favorite(r["id"]) else "☆ 收藏"
+        if c[2].button(fav_label, key=f"qb_fav_{r['id']}"):
+            if db.is_favorite(r["id"]):
+                db.remove_favorite(r["id"])
+            else:
+                db.add_favorite(r["id"])
+            st.rerun()
 
 
 # ---- 顶部：品牌 + 模式 + 操作 ----
@@ -265,6 +305,14 @@ with h1:
     )
 with h2:
     st.pills("模式", ["模拟面试", "辅导答疑"], key="mode", label_visibility="collapsed")
+
+st.selectbox(
+    "面试官风格",
+    list(PERSONAS),
+    index=0,
+    key="persona",
+    help="一面随和 · 二面严谨 · 三面沉稳",
+)
 
 a1, a2, a3, a4 = st.columns(4)
 with a1:
@@ -294,7 +342,7 @@ def render_welcome():
         ("🎯", "定制面试", "按岗位与 JD 生成专属题", "开始定制", lambda: custom_interview_dialog()),
     ]
     cols = st.columns(3)
-    for col, (icon, title, desc, label, action) in zip(cols, cards):
+    for col, (icon, title, desc, label, action) in zip(cols, cards, strict=False):
         with col:
             st.markdown(
                 f'<div class="qcard"><div class="qicon">{icon}</div>'
@@ -346,6 +394,14 @@ if prompt:
         with st.chat_message("assistant", avatar="🎤"):
             st.error(reply)
     st.session_state.history.append(("assistant", reply or "小P暂时无法回答，请稍后重试。"))
+
+    if getattr(sess, "finished", False) and sess.mode == "mock" and "【总分】" in (reply or ""):
+        st.download_button(
+            "下载总结报告 (.md)",
+            reply,
+            file_name=f"面试报告_{datetime.now().strftime('%Y%m%d_%H%M')}.md",
+            mime="text/markdown",
+        )
 
 # ---- 语音通话（独立语音通话页，像打电话一样）----
 # 右下角按钮在新标签页打开 FastAPI 托管的语音通话页（http://{host}:{port}/），

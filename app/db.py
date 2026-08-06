@@ -29,6 +29,7 @@ CREATE TABLE IF NOT EXISTS questions (
     answer        TEXT,                       -- 参考答案（源站如有，可为空）
     tags          TEXT,                       -- 逗号分隔的标签，如 "Python,GIL"
     difficulty    TEXT,                       -- 难度：简单/中等/困难（或算法题 easy/medium/hard）
+    company       TEXT,                       -- 公司维度标签（如 字节跳动 / 阿里 / 腾讯）
     url           TEXT,                       -- 来源链接
     content_hash  TEXT NOT NULL UNIQUE,       -- 归一化去重哈希
     fetched_at    TEXT NOT NULL               -- 抓取时间（ISO 8601）
@@ -44,6 +45,7 @@ CREATE TABLE IF NOT EXISTS sessions (
     job_title   TEXT,                       -- 定制面试目标岗位
     jd          TEXT,                       -- 定制面试招聘信息
     source      TEXT,                       -- 题库 / 定制
+    persona     TEXT,                       -- 面试官人格（一面/二面/三面）
     started_at  TEXT NOT NULL,              -- 开始时间（ISO 8601）
     score       INTEGER,                    -- 报告总分（0-100）
     report      TEXT,                       -- 总结报告全文
@@ -60,6 +62,12 @@ CREATE TABLE IF NOT EXISTS session_answers (
 
 CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
 CREATE INDEX IF NOT EXISTS idx_session_answers_sid ON session_answers(session_id);
+
+CREATE TABLE IF NOT EXISTS favorites (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    question_id INTEGER NOT NULL UNIQUE REFERENCES questions(id),
+    created_at  TEXT NOT NULL
+);
 """
 
 #: FTS5 外部内容表：与 questions 通过 rowid 关联，触发器保持同步
@@ -122,6 +130,15 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if version < 2:
         conn.execute("PRAGMA user_version = 2")
         logger.info("数据库迁移至版本 2：新增面试记录表（sessions / session_answers）")
+    if version < 3:
+        q_cols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
+        if "company" not in q_cols:
+            conn.execute("ALTER TABLE questions ADD COLUMN company TEXT")
+        s_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if "persona" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN persona TEXT")
+        conn.execute("PRAGMA user_version = 3")
+        logger.info("数据库迁移至版本 3：新增收藏表、题目公司标签与面试官人格")
     _sync_fts(conn)
 
 
@@ -162,6 +179,7 @@ def upsert_question(
     answer: str | None = None,
     tags: list[str] | None = None,
     difficulty: str | None = None,
+    company: str | None = None,
     url: str | None = None,
 ) -> bool:
     """插入一条题目，返回是否为新入库（False 表示已存在被跳过）。"""
@@ -171,9 +189,9 @@ def upsert_question(
     with closing(get_conn()) as conn, conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO questions
-               (source, source_id, title, content, answer, tags, difficulty, url, content_hash, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
-            (source, source_id, title, content, answer, tag_str, difficulty, url, h, now),
+               (source, source_id, title, content, answer, tags, difficulty, company, url, content_hash, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+            (source, source_id, title, content, answer, tag_str, difficulty, company, url, h, now),
         )
         return cur.rowcount > 0
 
@@ -195,6 +213,7 @@ def upsert_many(questions: list[dict]) -> dict:
                 q.get("answer"),
                 ",".join(q["tags"]) if q.get("tags") else None,
                 q.get("difficulty"),
+                q.get("company"),
                 q.get("url"),
                 h,
                 now,
@@ -203,8 +222,8 @@ def upsert_many(questions: list[dict]) -> dict:
     with closing(get_conn()) as conn, conn:
         cur = conn.executemany(
             """INSERT OR IGNORE INTO questions
-               (source, source_id, title, content, answer, tags, difficulty, url, content_hash, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?)""",
+               (source, source_id, title, content, answer, tags, difficulty, company, url, content_hash, fetched_at)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
         new = max(cur.rowcount, 0)
@@ -227,10 +246,11 @@ def search_questions(
     tags: list[str] | None = None,
     difficulty: str | None = None,
     source: str | None = None,
+    company: str | None = None,
     keyword: str | None = None,
     limit: int = 20,
 ) -> list[sqlite3.Row]:
-    """按标签/难度/来源/标题关键词检索题目。"""
+    """按标签/难度/来源/公司/标题关键词检索题目。"""
     sql = "SELECT * FROM questions WHERE 1=1"
     params: list = []
     if tags:
@@ -245,6 +265,9 @@ def search_questions(
     if source:
         sql += " AND source = ?"
         params.append(source)
+    if company:
+        sql += " AND company = ?"
+        params.append(company)
     if keyword:
         sql += " AND title LIKE ? ESCAPE '\\'"
         params.append(f"%{_escape_like(keyword)}%")
@@ -292,19 +315,30 @@ def get_question_by_id(qid: int):
         return conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
 
 
+def list_companies() -> list[str]:
+    """题库中已有的公司标签（去重，按名称排序）。"""
+    with closing(get_conn()) as conn:
+        rows = conn.execute(
+            "SELECT DISTINCT company FROM questions "
+            "WHERE company IS NOT NULL AND company != '' ORDER BY company"
+        ).fetchall()
+    return [r["company"] for r in rows]
+
+
 def create_session(
     mode: str,
     job_title: str = "",
     jd: str = "",
     source: str = "",
+    persona: str = "",
     started_at: str | None = None,
 ) -> int:
     """创建一条面试记录，返回 session_id。"""
     started_at = started_at or datetime.now(timezone.utc).isoformat()
     with closing(get_conn()) as conn, conn:
         cur = conn.execute(
-            "INSERT INTO sessions (mode, job_title, jd, source, started_at) VALUES (?,?,?,?,?)",
-            (mode, job_title or None, jd or None, source or None, started_at),
+            "INSERT INTO sessions (mode, job_title, jd, source, persona, started_at) VALUES (?,?,?,?,?,?)",
+            (mode, job_title or None, jd or None, source or None, persona or None, started_at),
         )
         return cur.lastrowid
 
@@ -347,6 +381,40 @@ def get_session_answers(session_id: int) -> list[sqlite3.Row]:
     with closing(get_conn()) as conn:
         return conn.execute(
             "SELECT * FROM session_answers WHERE session_id=? ORDER BY id", (session_id,)
+        ).fetchall()
+
+
+def add_favorite(question_id: int) -> bool:
+    """收藏题目，返回是否为新收藏（已收藏返回 False）。"""
+    with closing(get_conn()) as conn, conn:
+        cur = conn.execute(
+            "INSERT OR IGNORE INTO favorites (question_id, created_at) VALUES (?, ?)",
+            (question_id, datetime.now(timezone.utc).isoformat()),
+        )
+        return cur.rowcount > 0
+
+
+def remove_favorite(question_id: int) -> None:
+    """取消收藏。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute("DELETE FROM favorites WHERE question_id = ?", (question_id,))
+
+
+def is_favorite(question_id: int) -> bool:
+    with closing(get_conn()) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM favorites WHERE question_id = ?", (question_id,)
+        ).fetchone()
+    return row is not None
+
+
+def list_favorites(limit: int = 50) -> list[sqlite3.Row]:
+    """收藏的题目列表（含收藏时间，按收藏先后倒序）。"""
+    with closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT q.*, f.created_at AS faved_at FROM favorites f "
+            "JOIN questions q ON q.id = f.question_id ORDER BY f.id DESC LIMIT ?",
+            (limit,),
         ).fetchall()
 
 

@@ -62,6 +62,16 @@ class LLMTests(unittest.TestCase):
         self.assertEqual(text, "你好")
         self.assertTrue(client.chat.completions.create.call_args.kwargs["stream"])
 
+    def test_chat_model_override(self):
+        """chat 的 model 参数覆盖默认模型（供总结报告用更强模型）。"""
+        client = mock.Mock()
+        client.chat.completions.create.return_value = _fake_completion()
+        with mock.patch.object(llm, "get_client", return_value=client):
+            llm.chat([{"role": "user", "content": "hi"}], model="deepseek-reasoner")
+        self.assertEqual(
+            client.chat.completions.create.call_args.kwargs["model"], "deepseek-reasoner"
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

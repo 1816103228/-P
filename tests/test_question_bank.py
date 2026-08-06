@@ -7,13 +7,14 @@
 数据类测试在空库时自动跳过（先跑爬虫抓取）。
 """
 import os
+import tempfile
 import unittest
 from pathlib import Path
 from unittest import mock
 
 os.environ["DISABLE_SCHEDULER"] = "1"
 
-from app import db
+from app import config, db
 from app.agent.coach import InterviewSession
 
 # AppTest.from_file 的相对路径按调用文件解析，这里显式指向 Web 入口
@@ -69,6 +70,44 @@ class QuestionBankChecks(unittest.TestCase):
         self.assertEqual(s.answers, [], "旧答案不应残留")
 
 
+class BankFeatureDbTests(unittest.TestCase):
+    """收藏 / 自定义题 / 公司标签：临时库测试，不依赖真实题库数据。"""
+
+    def setUp(self):
+        self._tmp_dir = tempfile.mkdtemp()
+        self._orig_db_path = config.DB_PATH
+        config.DB_PATH = Path(self._tmp_dir) / "test.db"
+        db.init_db()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig_db_path
+
+    def test_favorite_roundtrip(self):
+        db.upsert_question(source="custom", title="收藏测试题", answer="参考答案")
+        q = db.search_questions(keyword="收藏测试题", limit=1)[0]
+        self.assertTrue(db.add_favorite(q["id"]))
+        self.assertFalse(db.add_favorite(q["id"]), "重复收藏应返回 False")
+        self.assertTrue(db.is_favorite(q["id"]))
+        self.assertEqual(len(db.list_favorites()), 1)
+        db.remove_favorite(q["id"])
+        self.assertFalse(db.is_favorite(q["id"]))
+        self.assertEqual(len(db.list_favorites()), 0)
+
+    def test_custom_question_with_company(self):
+        db.upsert_question(
+            source="custom",
+            title="字节后端面试题",
+            answer="参考答案",
+            tags=["Redis", "限流"],
+            difficulty="中等",
+            company="字节跳动",
+        )
+        self.assertIn("字节跳动", db.list_companies())
+        rows = db.search_questions(company="字节跳动")
+        self.assertTrue(any(r["title"] == "字节后端面试题" for r in rows))
+        self.assertEqual(db.search_questions(company="不存在的公司"), [])
+
+
 
 
 class UITest(unittest.TestCase):
@@ -114,9 +153,8 @@ class UITest(unittest.TestCase):
         「出这道题」的模式切换逻辑已在 QuestionBankChecks
         test_ask_question_by_id_switches_to_mock 中以状态机层面覆盖。
         """
-        from streamlit.testing.v1 import AppTest
-
         from app.agent.coach import InterviewSession
+        from streamlit.testing.v1 import AppTest
 
         at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
         at.session_state["session"] = InterviewSession("coach")  # 预设辅导答疑会话

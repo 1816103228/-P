@@ -7,7 +7,6 @@ from unittest import mock
 from app import config, db
 from app.agent.coach import InterviewSession, generate_interview_questions
 
-
 FAKE_QUESTION = {
     "id": 1,
     "title": "谈谈 Python 的 GIL",
@@ -115,9 +114,16 @@ class CoachFlowTests(unittest.TestCase):
         self.assertEqual(s.stage_idx, 1)
         self.assertEqual(s.current_q["title"], "Q2")
 
+    def test_persona_in_system_prompt(self):
+        """面试官人格注入系统提示词，且 reset 后保留。"""
+        s = InterviewSession("mock", persona="一面 · 同级工程师")
+        self.assertIn("一面 · 同级工程师", s.messages[0]["content"])
+        s.reset("mock")
+        self.assertIn("一面 · 同级工程师", s.messages[0]["content"])
+
     def test_finish_report_persists_session(self):
-        """模拟面试结束后：问答、评分、报告与薄弱点写入数据库。"""
-        s = InterviewSession("mock", questions=["Q1"])
+        """模拟面试结束后：问答、评分、报告、薄弱点与人格写入数据库。"""
+        s = InterviewSession("mock", questions=["Q1"], persona="二面 · 资深工程师")
 
         def fake_chat(messages, **kwargs):
             if messages[-1]["role"] == "user" and "总结报告" in messages[-1]["content"]:
@@ -133,9 +139,30 @@ class CoachFlowTests(unittest.TestCase):
         row = rows[0]
         self.assertEqual(row["score"], 85)
         self.assertIn("Redis 缓存穿透", row["weak_points"] or "")
+        self.assertEqual(row["persona"], "二面 · 资深工程师")
         answers = db.get_session_answers(row["id"])
         self.assertEqual(len(answers), 1)
         self.assertEqual(answers[0]["question_title"], "Q1")
+
+    def test_report_uses_report_model(self):
+        """REPORT_MODEL 配置生效：总结报告用指定模型，普通对话用默认模型。"""
+        s = InterviewSession("mock", questions=["Q1"])
+        report_kwargs: dict = {}
+
+        def fake_chat(messages, **kwargs):
+            if messages[-1]["role"] == "user" and "总结报告" in messages[-1]["content"]:
+                report_kwargs.update(kwargs)
+                return "【总分】80/100\n知识薄弱点：\n- 测试\n改进建议：\n- 复习"
+            return "小P回复"
+
+        with (
+            mock.patch("app.agent.coach.config.REPORT_MODEL", "deepseek-reasoner"),
+            mock.patch("app.agent.coach.llm.chat", side_effect=fake_chat),
+        ):
+            s.handle("自我介绍")
+            s.handle("我的回答")
+            s.handle(LONG_ANSWER)
+        self.assertEqual(report_kwargs.get("model"), "deepseek-reasoner")
 
     def test_generate_interview_questions_parses_list(self):
         with (

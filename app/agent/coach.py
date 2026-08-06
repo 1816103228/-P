@@ -14,7 +14,7 @@ import re
 from datetime import datetime, timezone
 
 import app.db as db
-from app import prompts
+from app import config, prompts
 from app.agent import llm
 
 logger = logging.getLogger("interview_coach.coach")
@@ -128,7 +128,12 @@ class InterviewSession:
     """一次模拟面试/辅导会话的状态。"""
 
     def __init__(
-        self, mode: str, questions: list[str] | None = None, job_title: str = "", jd: str = ""
+        self,
+        mode: str,
+        questions: list[str] | None = None,
+        job_title: str = "",
+        jd: str = "",
+        persona: str = "",
     ):
         self.mode = mode  # 'mock' | 'coach'
         self.stage_idx = 0  # 当前阶段下标（模拟）
@@ -141,10 +146,12 @@ class InterviewSession:
         self.custom_questions = questions or []
         self.job_title = job_title
         self.jd = jd
+        self.persona = persona
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.followup_count = 0  # 当前题已追问次数（深度感知追问）
 
         rules = prompts.MOCK_RULES if mode == "mock" else prompts.COACH_RULES
+        persona_block = f"\n\n【本轮面试官】{persona}" if persona else ""
         extra = ""
         if self.custom_questions:
             extra = (
@@ -152,7 +159,9 @@ class InterviewSession:
                 f"招聘信息/JD：{(jd or '未提供')[:2000]}\n"
                 f"本轮共 {len(self.custom_questions)} 道定制题，逐题推进，按流程点评与追问。"
             )
-        self.messages = [{"role": "system", "content": prompts.ROLE + "\n" + rules + extra}]
+        self.messages = [
+            {"role": "system", "content": prompts.ROLE + persona_block + "\n" + rules + extra}
+        ]
 
     # ------------------------------------------------------------ 定制面试
 
@@ -184,15 +193,17 @@ class InterviewSession:
 
     # ------------------------------------------------------------ LLM 调用
 
-    def _chat(self, max_tokens: int = 2048, temperature: float = 0.7) -> str:
+    def _chat(self, max_tokens: int = 2048, temperature: float = 0.7, model: str | None = None) -> str:
         """统一的同步 LLM 调用（先压缩上下文）。"""
         self._maybe_compact()
-        return llm.chat(self.messages, max_tokens=max_tokens, temperature=temperature)
+        return llm.chat(self.messages, max_tokens=max_tokens, temperature=temperature, model=model)
 
-    def _chat_stream(self, max_tokens: int = 2048, temperature: float = 0.7):
+    def _chat_stream(self, max_tokens: int = 2048, temperature: float = 0.7, model: str | None = None):
         """统一的流式 LLM 调用（先压缩上下文），返回增量迭代器。"""
         self._maybe_compact()
-        return llm.chat_stream(self.messages, max_tokens=max_tokens, temperature=temperature)
+        return llm.chat_stream(
+            self.messages, max_tokens=max_tokens, temperature=temperature, model=model
+        )
 
     # ------------------------------------------------------------ 上下文压缩
 
@@ -476,7 +487,7 @@ class InterviewSession:
                 ),
             }
         )
-        reply = self._chat(max_tokens=3000)
+        reply = self._chat(max_tokens=3000, model=config.REPORT_MODEL or None)
         self.messages.append({"role": "assistant", "content": reply})
         self._persist_report(reply)
         return reply
@@ -501,7 +512,7 @@ class InterviewSession:
             }
         )
         chunks: list[str] = []
-        for delta in self._chat_stream(max_tokens=3000):
+        for delta in self._chat_stream(max_tokens=3000, model=config.REPORT_MODEL or None):
             chunks.append(delta)
             yield delta
         reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
@@ -517,6 +528,7 @@ class InterviewSession:
                 job_title=self.job_title,
                 jd=self.jd,
                 source="定制" if self.custom_questions else "题库",
+                persona=self.persona,
                 started_at=self.started_at,
             )
             db.add_session_answers(sid, self.answers)
@@ -526,7 +538,7 @@ class InterviewSession:
 
     def reset(self, mode: str) -> None:
         """重建会话状态（模式切换/中途切题时调用）。"""
-        self.__init__(mode)
+        self.__init__(mode, persona=self.persona)
 
     def ask_question_by_id(self, qid: int) -> str:
         """题库浏览→「出这道题」：直接以指定题目出题，开启一段新的模拟面试。"""
