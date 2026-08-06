@@ -11,6 +11,7 @@
 import json
 import logging
 import re
+from datetime import datetime, timezone
 
 import app.db as db
 from app import prompts
@@ -25,6 +26,57 @@ SUMMARY_CHUNK = 16  # 超阈值后，每次把最旧的 N 条压缩为摘要
 EMPTY_BANK_HINT = "题库暂时为空，请先运行 python -m app.crawler.run 抓取题库。"
 FINISHED_HINT = "本轮模拟面试已结束。可以开始新一轮，或切换到辅导答疑模式继续练习。"
 NO_REPLY_FALLBACK = "（小P暂时无法回答，请稍后重试。）"
+
+#: 深度感知追问：一道题最多追问 2 次；追问回答过短/含糊时追加一次更具体的追问
+MAX_FOLLOWUPS = 2
+SHALLOW_MIN_CHARS = 80  # ponytail: 长度+模糊词启发式，需要更准可换成 LLM 深度判定
+_HEDGE_WORDS = (
+    "不太确定",
+    "不确定",
+    "不知道",
+    "没接触过",
+    "没怎么用过",
+    "可能吧",
+    "大概",
+    "记不清",
+    "忘了",
+    "不会",
+    "没做过",
+)
+
+_SCORE_RE = re.compile(r"【总分】\s*(\d{1,3})\s*/\s*100")
+
+
+def _is_shallow_answer(text: str) -> bool:
+    """粗略判断回答是否浮于表面：过短或含模糊措辞。"""
+    text = (text or "").strip()
+    return len(text) < SHALLOW_MIN_CHARS or any(w in text for w in _HEDGE_WORDS)
+
+
+def _report_score(report: str) -> int | None:
+    """从报告首行【总分】NN/100 提取整数分，缺失时返回 None。"""
+    m = _SCORE_RE.search(report or "")
+    if not m:
+        return None
+    return min(int(m.group(1)), 100)
+
+
+def _extract_weak_points(report: str) -> str | None:
+    """抽取报告"知识薄弱点"段落的清单行（提示词要求以 - 开头）。"""
+    out: list[str] = []
+    active = False
+    for raw in (report or "").splitlines():
+        line = raw.strip()
+        if "薄弱点" in line:
+            active = True
+            continue
+        if not active:
+            continue
+        if line.startswith(("-", "•")) or re.match(r"^\d+[.、]", line):
+            out.append("- " + re.sub(r"^[-•\d.、\s]+", "", line).strip())
+        elif line:
+            break
+    return "\n".join(out) if out else None
 
 
 def _sanitize_input(text: str) -> str:
@@ -87,6 +139,10 @@ class InterviewSession:
         self.answers: list[dict] = []  # 记录用户答案，供评分
         self.finished = False
         self.custom_questions = questions or []
+        self.job_title = job_title
+        self.jd = jd
+        self.started_at = datetime.now(timezone.utc).isoformat()
+        self.followup_count = 0  # 当前题已追问次数（深度感知追问）
 
         rules = prompts.MOCK_RULES if mode == "mock" else prompts.COACH_RULES
         extra = ""
@@ -237,12 +293,26 @@ class InterviewSession:
             )
             reply = self._chat()
             self.messages.append({"role": "assistant", "content": reply})
+            self.followup_count = 1
             self.turn = "followup"
             return reply
 
         # 3) 用户在答追问 → 进入下一题 或 结束出报告
         if self.turn == "followup":
             self.messages.append({"role": "user", "content": f"（追问的回答）{user_text}"})
+            if self.followup_count < MAX_FOLLOWUPS and _is_shallow_answer(user_text):
+                self.followup_count += 1
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": "用户对追问的回答仍然比较浅。请简短点评这次回答，"
+                        "再追问 1 个更具体的问题（引用用户原话）。",
+                    }
+                )
+                reply = self._chat()
+                self.messages.append({"role": "assistant", "content": reply})
+                return reply
+            self.followup_count = 0
             self.stage_idx += 1
             if self.stage_idx >= self._total_questions():
                 return self._finish_report()
@@ -281,11 +351,29 @@ class InterviewSession:
                 yield delta
             reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
             self.messages.append({"role": "assistant", "content": reply})
+            self.followup_count = 1
             self.turn = "followup"
             return reply
 
         if self.turn == "followup":
             self.messages.append({"role": "user", "content": f"（追问的回答）{user_text}"})
+            if self.followup_count < MAX_FOLLOWUPS and _is_shallow_answer(user_text):
+                self.followup_count += 1
+                self.messages.append(
+                    {
+                        "role": "user",
+                        "content": "用户对追问的回答仍然比较浅。请简短点评这次回答，"
+                        "再追问 1 个更具体的问题（引用用户原话）。",
+                    }
+                )
+                chunks: list[str] = []
+                for delta in self._chat_stream():
+                    chunks.append(delta)
+                    yield delta
+                reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
+                self.messages.append({"role": "assistant", "content": reply})
+                return reply
+            self.followup_count = 0
             self.stage_idx += 1
             if self.stage_idx >= self._total_questions():
                 return (yield from self._finish_report_stream())
@@ -380,8 +468,9 @@ class InterviewSession:
                 "role": "user",
                 "content": (
                     "全部题目已结束。请基于以下用户回答，输出【总结报告】：\n"
-                    f"1) 表现评分（0-100，按 {prompts.SCORE_WEIGHTS} 加权，给出分项分）；\n"
-                    "2) 知识薄弱点（具体到知识点）；\n"
+                    "1) 第一行输出【总分】NN/100（NN 为 0-100 整数评分，按 "
+                    f"{prompts.SCORE_WEIGHTS} 加权），随后给出分项分；\n"
+                    "2) 知识薄弱点（具体到知识点，每行以 - 开头）；\n"
                     "3) 改进建议清单（可执行、分优先级）。\n\n"
                     f"用户全部回答：\n{answers_txt}"
                 ),
@@ -389,6 +478,7 @@ class InterviewSession:
         )
         reply = self._chat(max_tokens=3000)
         self.messages.append({"role": "assistant", "content": reply})
+        self._persist_report(reply)
         return reply
 
     def _finish_report_stream(self):
@@ -402,8 +492,9 @@ class InterviewSession:
                 "role": "user",
                 "content": (
                     "全部题目已结束。请基于以下用户回答，输出【总结报告】：\n"
-                    f"1) 表现评分（0-100，按 {prompts.SCORE_WEIGHTS} 加权，给出分项分）；\n"
-                    "2) 知识薄弱点（具体到知识点）；\n"
+                    "1) 第一行输出【总分】NN/100（NN 为 0-100 整数评分，按 "
+                    f"{prompts.SCORE_WEIGHTS} 加权），随后给出分项分；\n"
+                    "2) 知识薄弱点（具体到知识点，每行以 - 开头）；\n"
                     "3) 改进建议清单（可执行、分优先级）。\n\n"
                     f"用户全部回答：\n{answers_txt}"
                 ),
@@ -415,7 +506,23 @@ class InterviewSession:
             yield delta
         reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
         self.messages.append({"role": "assistant", "content": reply})
+        self._persist_report(reply)
         return reply
+
+    def _persist_report(self, report: str) -> None:
+        """把本轮问答与报告落库，供侧边栏「面试复盘」展示；失败仅记日志不影响对话。"""
+        try:
+            sid = db.create_session(
+                self.mode,
+                job_title=self.job_title,
+                jd=self.jd,
+                source="定制" if self.custom_questions else "题库",
+                started_at=self.started_at,
+            )
+            db.add_session_answers(sid, self.answers)
+            db.finish_session(sid, _report_score(report), report, _extract_weak_points(report))
+        except Exception:
+            logger.exception("面试记录落库失败（不影响本轮对话）")
 
     def reset(self, mode: str) -> None:
         """重建会话状态（模式切换/中途切题时调用）。"""

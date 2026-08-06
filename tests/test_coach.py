@@ -1,9 +1,12 @@
 """教练层状态机测试：完整模拟面试流程 + 流式输出（mock LLM，不触网）。"""
-
+import tempfile
 import unittest
+from pathlib import Path
 from unittest import mock
 
+from app import config, db
 from app.agent.coach import InterviewSession, generate_interview_questions
+
 
 FAKE_QUESTION = {
     "id": 1,
@@ -13,21 +16,31 @@ FAKE_QUESTION = {
     "source": "mianshiya",
 }
 
+LONG_ANSWER = "（我的详细回答）" * 30  # 超过 SHALLOW_MIN_CHARS，且不含模糊词
+
 
 class CoachFlowTests(unittest.TestCase):
+    def setUp(self):
+        """把数据库指向临时文件，避免测试把面试记录写进真实题库。"""
+        self._tmp_dir = tempfile.mkdtemp()
+        self._orig_db_path = config.DB_PATH
+        config.DB_PATH = Path(self._tmp_dir) / "test.db"
+        db.init_db()
+
+    def tearDown(self):
+        config.DB_PATH = self._orig_db_path
+
     def test_full_mock_interview_flow(self):
         s = InterviewSession("mock")
-        with (
-            mock.patch("app.agent.coach._pick_question", return_value=FAKE_QUESTION),
-            mock.patch("app.agent.coach.llm.chat", return_value="小P回复"),
-        ):
+        with mock.patch("app.agent.coach._pick_question", return_value=FAKE_QUESTION), \
+             mock.patch("app.agent.coach.llm.chat", return_value="小P回复"):
             s.handle("自我介绍：我是张三，3年后端")
             self.assertEqual(s.turn, "answering")
             self.assertEqual(s.stage_idx, 0)
             for i in range(6):
                 s.handle("我的回答")
-                self.assertEqual(s.turn, "followup", f"第{i + 1}题后应进入追问")
-                s.handle("追问的回答")
+                self.assertEqual(s.turn, "followup", f"第{i+1}题后应进入追问")
+                s.handle(LONG_ANSWER)
                 if i < 5:
                     self.assertEqual(s.stage_idx, i + 1)
                     self.assertEqual(s.turn, "answering")
@@ -41,22 +54,16 @@ class CoachFlowTests(unittest.TestCase):
 
     def test_coach_mode_rag(self):
         s = InterviewSession("coach")
-        with (
-            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
-            mock.patch("app.agent.coach.llm.chat", return_value="标准参考回答…"),
-        ):
+        with mock.patch("app.agent.coach.db.fts_search", return_value=[]), \
+             mock.patch("app.agent.coach.llm.chat", return_value="标准参考回答…"):
             reply = s.handle("Redis 缓存穿透怎么答")
         self.assertIn("标准参考回答", reply)
         self.assertEqual(s.mode, "coach")
 
     def test_handle_stream_yields_text(self):
         s = InterviewSession("coach")
-        with (
-            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
-            mock.patch(
-                "app.agent.coach.llm.chat_stream", return_value=iter(["标", "准", "答", "案"])
-            ),
-        ):
+        with mock.patch("app.agent.coach.db.fts_search", return_value=[]), \
+             mock.patch("app.agent.coach.llm.chat_stream", return_value=iter(["标", "准", "答", "案"])):
             text = "".join(s.handle_stream("怎么答"))
         self.assertEqual(text, "标准答案")
         self.assertEqual(s.messages[-1]["role"], "assistant")
@@ -64,30 +71,71 @@ class CoachFlowTests(unittest.TestCase):
     def test_input_truncated(self):
         s = InterviewSession("coach")
         long_text = "x" * 5000
-        with (
-            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
-            mock.patch("app.agent.coach.llm.chat", return_value="ok"),
-        ):
+        with mock.patch("app.agent.coach.db.fts_search", return_value=[]), \
+             mock.patch("app.agent.coach.llm.chat", return_value="ok"):
             s.handle(long_text)
         self.assertLessEqual(len(s.messages[-2]["content"]), 4000)
 
     def test_custom_questions_flow(self):
         """定制题：按给定题目逐题推进，答完所有定制题后出报告。"""
-        s = InterviewSession(
-            "mock", questions=["Q1", "Q2"], job_title="高级 Python 后端", jd="精通 FastAPI"
-        )
+        s = InterviewSession("mock", questions=["Q1", "Q2"], job_title="高级 Python 后端", jd="精通 FastAPI")
         with mock.patch("app.agent.coach.llm.chat", return_value="小P回复"):
             s.handle("自我介绍：我是张三")
             self.assertEqual(s.current_q["title"], "Q1")
             self.assertEqual(s._stage_name(), "定制题 1")
             s.handle("Q1 的答案")
-            s.handle("追问答案")
+            s.handle(LONG_ANSWER)
             self.assertEqual(s.current_q["title"], "Q2")
             s.handle("Q2 的答案")
-            s.handle("追问答案")
+            s.handle(LONG_ANSWER)
         self.assertTrue(s.finished)
         self.assertEqual(s.turn, "report")
         self.assertEqual([a["stage"] for a in s.answers], ["定制题 1", "定制题 2"])
+
+    def test_shallow_followup_triggers_second_followup(self):
+        """追问回答过短/含糊：追加一次更具体的追问，答完才进入下一题。"""
+        s = InterviewSession("mock", questions=["Q1", "Q2"])
+        with mock.patch("app.agent.coach.llm.chat", return_value="小P回复"):
+            s.handle("自我介绍：我是张三，3年后端")
+            s.handle(LONG_ANSWER)  # 第一题回答
+            self.assertEqual(s.turn, "followup")
+            s.handle("忘了，没接触过")  # 追问回答过浅
+        self.assertEqual(s.turn, "followup", "浅回答应触发第二次追问")
+        self.assertEqual(s.stage_idx, 0, "不应提前进入下一题")
+        self.assertEqual(s.followup_count, 2)
+
+    def test_deep_followup_advances_to_next_question(self):
+        """追问回答足够详细：进入下一题（不追加追问）。"""
+        s = InterviewSession("mock", questions=["Q1", "Q2"])
+        with mock.patch("app.agent.coach.llm.chat", return_value="小P回复"):
+            s.handle("自我介绍：我是张三，3年后端")
+            s.handle(LONG_ANSWER)
+            s.handle(LONG_ANSWER)  # 追问回答足够详细
+        self.assertEqual(s.turn, "answering")
+        self.assertEqual(s.stage_idx, 1)
+        self.assertEqual(s.current_q["title"], "Q2")
+
+    def test_finish_report_persists_session(self):
+        """模拟面试结束后：问答、评分、报告与薄弱点写入数据库。"""
+        s = InterviewSession("mock", questions=["Q1"])
+
+        def fake_chat(messages, **kwargs):
+            if messages[-1]["role"] == "user" and "总结报告" in messages[-1]["content"]:
+                return "【总分】85/100\n知识薄弱点：\n- Redis 缓存穿透\n- 索引失效\n改进建议：\n- 多练习"
+            return "小P回复"
+
+        with mock.patch("app.agent.coach.llm.chat", side_effect=fake_chat):
+            s.handle("自我介绍")
+            s.handle("我的回答")
+            s.handle(LONG_ANSWER)  # 深入回答后结束并出报告
+        rows = db.list_sessions(limit=5)
+        self.assertTrue(rows, "应有面试记录落库")
+        row = rows[0]
+        self.assertEqual(row["score"], 85)
+        self.assertIn("Redis 缓存穿透", row["weak_points"] or "")
+        answers = db.get_session_answers(row["id"])
+        self.assertEqual(len(answers), 1)
+        self.assertEqual(answers[0]["question_title"], "Q1")
 
     def test_generate_interview_questions_parses_list(self):
         with (
