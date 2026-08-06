@@ -7,6 +7,7 @@
 - 选题：SQL 层随机（带标签/难度/排除已出题），避免全表捞回内存过滤；
 - 支持流式输出（handle_stream）与同步输出（handle）。
 """
+
 import json
 import logging
 import re
@@ -17,9 +18,9 @@ from app.agent import llm
 
 logger = logging.getLogger("interview_coach.coach")
 
-MAX_INPUT_CHARS = 4000          # 单次用户输入上限（防粘贴长文烧 token）
-MAX_CONTEXT_MESSAGES = 24       # 上下文消息数阈值（不含 system）
-SUMMARY_CHUNK = 16              # 超阈值后，每次把最旧的 N 条压缩为摘要
+MAX_INPUT_CHARS = 4000  # 单次用户输入上限（防粘贴长文烧 token）
+MAX_CONTEXT_MESSAGES = 24  # 上下文消息数阈值（不含 system）
+SUMMARY_CHUNK = 16  # 超阈值后，每次把最旧的 N 条压缩为摘要
 
 EMPTY_BANK_HINT = "题库暂时为空，请先运行 python -m app.crawler.run 抓取题库。"
 FINISHED_HINT = "本轮模拟面试已结束。可以开始新一轮，或切换到辅导答疑模式继续练习。"
@@ -74,14 +75,16 @@ def _pick_question(
 class InterviewSession:
     """一次模拟面试/辅导会话的状态。"""
 
-    def __init__(self, mode: str, questions: list[str] | None = None, job_title: str = "", jd: str = ""):
-        self.mode = mode                  # 'mock' | 'coach'
-        self.stage_idx = 0                # 当前阶段下标（模拟）
+    def __init__(
+        self, mode: str, questions: list[str] | None = None, job_title: str = "", jd: str = ""
+    ):
+        self.mode = mode  # 'mock' | 'coach'
+        self.stage_idx = 0  # 当前阶段下标（模拟）
         self.asked_ids: set[int] = set()  # 已出题 id
-        self.messages: list[dict] = []    # LLM 完整对话历史
-        self.current_q = None             # 当前题目行（sqlite3.Row 或 None）
-        self.turn = "greeting"            # 模拟：greeting|answering|followup|report
-        self.answers: list[dict] = []     # 记录用户答案，供评分
+        self.messages: list[dict] = []  # LLM 完整对话历史
+        self.current_q = None  # 当前题目行（sqlite3.Row 或 None）
+        self.turn = "greeting"  # 模拟：greeting|answering|followup|report
+        self.answers: list[dict] = []  # 记录用户答案，供评分
         self.finished = False
         self.custom_questions = questions or []
 
@@ -223,9 +226,14 @@ class InterviewSession:
                     "answer": user_text,
                 }
             )
-            self.messages.append({"role": "user", "content": f"（第{self.stage_idx+1}题我的回答）{user_text}"})
             self.messages.append(
-                {"role": "user", "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。"}
+                {"role": "user", "content": f"（第{self.stage_idx + 1}题我的回答）{user_text}"}
+            )
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。",
+                }
             )
             reply = self._chat()
             self.messages.append({"role": "assistant", "content": reply})
@@ -258,9 +266,14 @@ class InterviewSession:
                     "answer": user_text,
                 }
             )
-            self.messages.append({"role": "user", "content": f"（第{self.stage_idx+1}题我的回答）{user_text}"})
             self.messages.append(
-                {"role": "user", "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。"}
+                {"role": "user", "content": f"（第{self.stage_idx + 1}题我的回答）{user_text}"}
+            )
+            self.messages.append(
+                {
+                    "role": "user",
+                    "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。",
+                }
             )
             chunks: list[str] = []
             for delta in self._chat_stream():
@@ -306,7 +319,7 @@ class InterviewSession:
             {
                 "role": "user",
                 "content": (
-                    f"【出题】第{self.stage_idx+1}题，阶段「{stage_name}」，"
+                    f"【出题】第{self.stage_idx + 1}题，阶段「{stage_name}」，"
                     f"难度「{diff}」。题目：{q['title']}\n"
                     f"请以面试官口吻把这道题自然地抛给用户（可稍作引导，不要直接给答案）。"
                 ),
@@ -341,7 +354,7 @@ class InterviewSession:
             {
                 "role": "user",
                 "content": (
-                    f"【出题】第{self.stage_idx+1}题，阶段「{stage_name}」，"
+                    f"【出题】第{self.stage_idx + 1}题，阶段「{stage_name}」，"
                     f"难度「{diff}」。题目：{q['title']}\n"
                     f"请以面试官口吻把这道题自然地抛给用户（可稍作引导，不要直接给答案）。"
                 ),

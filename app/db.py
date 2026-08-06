@@ -7,13 +7,13 @@
 - 全文检索：FTS5 外部内容表（标题/题干/答案/标签），不可用时回退 LIKE；
 - 迁移：PRAGMA user_version 管理 schema 版本。
 """
+
 import hashlib
 import logging
 import re
 import sqlite3
 from contextlib import closing
 from datetime import datetime, timezone
-from typing import Optional
 
 from app import config
 
@@ -131,12 +131,12 @@ def upsert_question(
     *,
     source: str,
     title: str,
-    source_id: Optional[str] = None,
-    content: Optional[str] = None,
-    answer: Optional[str] = None,
-    tags: Optional[list[str]] = None,
-    difficulty: Optional[str] = None,
-    url: Optional[str] = None,
+    source_id: str | None = None,
+    content: str | None = None,
+    answer: str | None = None,
+    tags: list[str] | None = None,
+    difficulty: str | None = None,
+    url: str | None = None,
 ) -> bool:
     """插入一条题目，返回是否为新入库（False 表示已存在被跳过）。"""
     h = make_hash(source, title, content or "")
@@ -160,18 +160,20 @@ def upsert_many(questions: list[dict]) -> dict:
     rows = []
     for q in questions:
         h = make_hash(q.get("source", ""), q.get("title", ""), q.get("content") or "")
-        rows.append((
-            q.get("source", ""),
-            q.get("source_id"),
-            q.get("title"),
-            q.get("content"),
-            q.get("answer"),
-            ",".join(q["tags"]) if q.get("tags") else None,
-            q.get("difficulty"),
-            q.get("url"),
-            h,
-            now,
-        ))
+        rows.append(
+            (
+                q.get("source", ""),
+                q.get("source_id"),
+                q.get("title"),
+                q.get("content"),
+                q.get("answer"),
+                ",".join(q["tags"]) if q.get("tags") else None,
+                q.get("difficulty"),
+                q.get("url"),
+                h,
+                now,
+            )
+        )
     with closing(get_conn()) as conn, conn:
         cur = conn.executemany(
             """INSERT OR IGNORE INTO questions
@@ -196,10 +198,10 @@ def count_by_source() -> list[sqlite3.Row]:
 
 
 def search_questions(
-    tags: Optional[list[str]] = None,
-    difficulty: Optional[str] = None,
-    source: Optional[str] = None,
-    keyword: Optional[str] = None,
+    tags: list[str] | None = None,
+    difficulty: str | None = None,
+    source: str | None = None,
+    keyword: str | None = None,
     limit: int = 20,
 ) -> list[sqlite3.Row]:
     """按标签/难度/来源/标题关键词检索题目。"""
@@ -227,10 +229,10 @@ def search_questions(
 
 
 def pick_random_question(
-    tags: Optional[list[str]] = None,
-    difficulty: Optional[str] = None,
-    source: Optional[str] = None,
-    exclude_ids: Optional[set[int]] = None,
+    tags: list[str] | None = None,
+    difficulty: str | None = None,
+    source: str | None = None,
+    exclude_ids: set[int] | None = None,
     limit: int = 1,
 ) -> list[sqlite3.Row]:
     """按条件在 SQL 层随机选题，避免全表捞回内存过滤。"""
@@ -264,7 +266,7 @@ def get_question_by_id(qid: int):
         return conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
 
 
-def latest_questions(source: Optional[str] = None, limit: int = 20) -> list[sqlite3.Row]:
+def latest_questions(source: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
     """最新的题目（模拟面试候选题库）。"""
     sql = "SELECT * FROM questions"
     params: list = []

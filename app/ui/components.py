@@ -1,4 +1,5 @@
-"""共享 UI 组件：虚拟人物、侧边栏统计、题库浏览（单一实现，供 main.py 使用）。"""
+"""共享 UI 组件：虚拟人物、侧边栏统计、题库浏览（单一实现，供 web.py 使用）。"""
+
 import streamlit as st
 
 import app.db as db
@@ -63,7 +64,9 @@ def render_sidebar() -> None:
         st.divider()
         st.caption("数据源：面试鸭 / LeetCode\n（牛客等更多源待接入）")
         st.divider()
-        st.caption("📞 右下角按钮进入语音通话\n（Chrome / Edge，需先启动 voice_server）")
+        st.caption(
+            "📞 右下角按钮打开独立语音通话页\n（新标签页，像打电话一样；需先启动 voice_server）"
+        )
 
 
 def render_question_bank() -> None:

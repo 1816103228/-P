@@ -23,3 +23,14 @@ logs/
 # 编辑器
 .idea/
 .vscode/
+
+# Python 构建产物
+*.egg-info/
+build/
+dist/
+
+# 测试与静态检查缓存
+.pytest_cache/
+.ruff_cache/
+.coverage
+htmlcov/

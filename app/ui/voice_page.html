@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>面试官小P · 语音通话</title>
+<style>
+* { margin:0; padding:0; box-sizing:border-box; }
+html,body { height:100%; }
+body {
+  font-family:-apple-system,"PingFang SC","Microsoft YaHei",sans-serif;
+  background:radial-gradient(1200px 600px at 20% -10%, #3b4f8f 0%, #22304f 45%, #141c30 100%);
+  color:#f4f6fb;
+  display:flex; justify-content:center;
+  min-height:100dvh;
+}
+.phone { width:min(480px,100%); min-height:100dvh; display:flex; flex-direction:column; padding:18px 18px calc(110px + env(safe-area-inset-bottom)); }
+.phone::before { content:""; position:fixed; inset:0; z-index:-1; background:
+  radial-gradient(520px 300px at 85% -5%, rgba(120,150,255,.28), transparent 60%),
+  radial-gradient(420px 260px at -10% 30%, rgba(255,120,160,.14), transparent 60%),
+  radial-gradient(600px 340px at 50% 115%, rgba(47,191,113,.12), transparent 60%); }
+.top { display:flex; align-items:center; justify-content:space-between; gap:8px; }
+.top .back { color:#9fb2d9; text-decoration:none; font-size:13px; }
+.top .back:hover { color:#fff; }
+.top .title { font-size:17px; font-weight:700; letter-spacing:1px; }
+.mode { font-size:12px; color:#ffd166; background:rgba(255,209,102,.12); border:1px solid rgba(255,209,102,.35); padding:2px 10px; border-radius:999px; white-space:nowrap; }
+.avatar { display:flex; justify-content:center; padding:8px 0 0; }
+.avatar.glow svg { filter:drop-shadow(0 0 28px rgba(109,134,245,.65)); transition:filter .35s ease; }
+.av-fig { animation: br 4.5s ease-in-out infinite; }
+@keyframes br { 0%,100%{transform:translateY(0) rotate(0deg)} 25%{transform:translateY(-5px) rotate(-.5deg)} 75%{transform:translateY(-3px) rotate(.5deg)} }
+.av-eye { animation: bl 4.5s ease-in-out infinite; transform-origin:center; }
+.av-eye.r { animation-delay:.18s; }
+@keyframes bl { 0%,96%,100%{transform:scaleY(1)} 98%{transform:scaleY(.08)} }
+.mc { animation: tc 3.5s ease-in-out infinite; }
+.mo { opacity:0; animation: to 3.5s ease-in-out infinite; }
+@keyframes tc { 0%,43%,100%{opacity:1} 51%{opacity:0} }
+@keyframes to { 0%,43%,100%{opacity:0} 51%{opacity:1} }
+.statusrow { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:16px; }
+.status { min-width:170px; text-align:center; font-size:14px; color:#d7e0f5; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); padding:7px 18px; border-radius:999px; backdrop-filter:blur(8px); }
+.status.busy { color:#ffd166; border-color:rgba(255,209,102,.45); }
+.timer { font-size:13px; color:#9fb2d9; font-variant-numeric:tabular-nums; background:rgba(255,255,255,.06); border:1px solid rgba(255,255,255,.12); padding:6px 12px; border-radius:999px; min-width:58px; text-align:center; }
+.wave { display:none; justify-content:center; align-items:center; gap:5px; height:22px; margin-top:12px; }
+.wave.on { display:flex; }
+.wave i { width:4px; height:7px; border-radius:2px; background:#6e8bff; animation:wv 0.85s ease-in-out infinite; }
+.wave i:nth-child(2) { animation-delay:.12s; } .wave i:nth-child(3) { animation-delay:.24s; }
+.wave i:nth-child(4) { animation-delay:.36s; } .wave i:nth-child(5) { animation-delay:.48s; }
+@keyframes wv { 0%,100% { height:6px; opacity:.5; } 50% { height:20px; opacity:1; } }
+.transcript { flex:1; margin-top:16px; overflow-y:auto; display:flex; flex-direction:column; gap:10px; padding:4px 2px; min-height:120px; max-height:44vh; }
+.bubble { max-width:84%; padding:10px 14px; border-radius:16px; font-size:14px; line-height:1.65; white-space:pre-wrap; word-break:break-word; animation:fadeIn .25s ease; }
+@keyframes fadeIn { from{opacity:0; transform:translateY(4px);} to{opacity:1; transform:none;} }
+.bubble.user { align-self:flex-end; background:linear-gradient(135deg,#5b7cff,#4f6ef7); color:#fff; border-bottom-right-radius:4px; box-shadow:0 4px 14px rgba(79,110,247,.28); }
+.bubble.assistant { align-self:flex-start; background:rgba(255,255,255,.10); color:#eef2fb; border-bottom-left-radius:4px; backdrop-filter:blur(8px); }
+.bubble.hint { align-self:center; background:transparent; color:#8fa3cc; font-size:12px; padding:2px 6px; max-width:92%; }
+.footer { position:fixed; left:0; right:0; bottom:calc(26px + env(safe-area-inset-bottom)); display:flex; justify-content:center; pointer-events:none; }
+#callBtn { pointer-events:auto; width:70px; height:70px; border-radius:50%; border:none; cursor:pointer; font-size:26px; color:#fff; background:#2fbf71; box-shadow:0 6px 24px rgba(47,191,113,.45); transition:all .25s; }
+#callBtn:hover { transform:scale(1.07); }
+#callBtn .lbl { display:block; font-size:11px; font-weight:600; margin-top:-3px; letter-spacing:1px; }
+#callBtn.on { background:#e74c3c; animation:micPulse .9s ease-in-out infinite; }
+@keyframes micPulse { 0%,100%{box-shadow:0 0 0 0 rgba(231,76,60,.45);} 50%{box-shadow:0 0 0 16px rgba(231,76,60,0);} }
+</style>
+</head>
+<body>
+<div class="phone">
+  <div class="top">
+    <a class="back" href="__WEB_URL__" target="_blank">← 文字版</a>
+    <div class="title">🎤 面试官小P</div>
+    <div class="mode" id="mode">辅导答疑</div>
+  </div>
+
+  <div class="avatar">
+    <div class="av-fig">
+      <svg width="190" height="250" viewBox="0 0 160 216" xmlns="http://www.w3.org/2000/svg">
+        <defs>
+          <radialGradient id="face" cx="48%" cy="35%"><stop offset="0%" stop-color="#ffead4"/><stop offset="55%" stop-color="#f5cfaa"/><stop offset="100%" stop-color="#d4a574"/></radialGradient>
+          <radialGradient id="cheek" cx="50%" cy="50%"><stop offset="0%" stop-color="#f0a0a0" stop-opacity=".5"/><stop offset="100%" stop-color="#f0a0a0" stop-opacity="0"/></radialGradient>
+          <linearGradient id="suit" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3a4f63"/><stop offset="100%" stop-color="#1e2c3a"/></linearGradient>
+          <linearGradient id="tie" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#e74c3c"/><stop offset="100%" stop-color="#a93226"/></linearGradient>
+          <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2c3e50"/><stop offset="100%" stop-color="#1a252f"/></linearGradient>
+        </defs>
+        <!-- 身体西装 --><rect x="26" y="105" width="108" height="80" rx="14" fill="url(#suit)"/>
+        <!-- 衬衫 --><path d="M50,104 L80,130 L110,104" fill="#f8f9fa" stroke="url(#suit)" stroke-width="1"/>
+        <!-- 领带 --><polygon points="80,106 66,138 80,162 94,138" fill="url(#tie)"/>
+        <!-- 左臂 --><rect x="10" y="118" width="20" height="50" rx="10" fill="url(#suit)"/>
+        <!-- 右臂 --><rect x="130" y="118" width="20" height="50" rx="10" fill="url(#suit)"/>
+        <!-- 左手 --><ellipse cx="20" cy="170" rx="11" ry="13" fill="#f5cfaa"/>
+        <!-- 右手 --><ellipse cx="140" cy="170" rx="11" ry="13" fill="#f5cfaa"/>
+        <!-- 脖子 --><rect x="66" y="95" width="28" height="16" rx="6" fill="#eac09e"/>
+        <!-- 头部 --><ellipse cx="80" cy="60" rx="48" ry="56" fill="url(#face)"/>
+        <!-- 耳朵 --><ellipse cx="30" cy="62" rx="8" ry="14" fill="#eac09e"/><ellipse cx="130" cy="62" rx="8" ry="14" fill="#eac09e"/>
+        <!-- 头发 --><path d="M32,45 Q32,0 80,-4 Q128,0 128,45 Q128,28 80,24 Q32,28 32,45" fill="url(#hair)"/>
+        <path d="M34,30 Q56,16 80,14 Q104,16 126,30" fill="#3d566e" opacity=".6"/>
+        <!-- 腮红 --><ellipse cx="48" cy="75" rx="14" ry="9" fill="url(#cheek)"/><ellipse cx="112" cy="75" rx="14" ry="9" fill="url(#cheek)"/>
+        <!-- 眼镜框 --><rect x="42" y="48" width="32" height="20" rx="6" fill="#f8f9fa" stroke="#2c3e50" stroke-width="2.2"/><rect x="86" y="48" width="32" height="20" rx="6" fill="#f8f9fa" stroke="#2c3e50" stroke-width="2.2"/>
+        <!-- 眼镜腿 --><line x1="34" y1="58" x2="42" y2="58" stroke="#2c3e50" stroke-width="2"/><line x1="118" y1="58" x2="126" y2="58" stroke="#2c3e50" stroke-width="2"/>
+        <!-- 眼镜桥 --><line x1="74" y1="57" x2="86" y2="57" stroke="#2c3e50" stroke-width="2"/>
+        <!-- 左眼 --><ellipse class="av-eye" cx="58" cy="57" rx="6" ry="7" fill="#1a1a2e"/><circle cx="60" cy="54" r="2" fill="#fff"/>
+        <!-- 右眼 --><ellipse class="av-eye r" cx="102" cy="57" rx="6" ry="7" fill="#1a1a2e"/><circle cx="104" cy="54" r="2" fill="#fff"/>
+        <!-- 眉毛 --><path d="M44,42 Q58,36 68,44" fill="none" stroke="#1a1a2e" stroke-width="2.5" stroke-linecap="round"/><path d="M92,44 Q102,36 116,42" fill="none" stroke="#1a1a2e" stroke-width="2.5" stroke-linecap="round"/>
+        <!-- 闭嘴 --><path class="mc" d="M66,85 Q80,92 94,85" fill="none" stroke="#1a1a2e" stroke-width="2.3" stroke-linecap="round"/>
+        <!-- 张嘴 --><ellipse class="mo" cx="80" cy="85" rx="8" ry="5" fill="#1a1a2e"/>
+        <!-- 高光 --><ellipse cx="60" cy="30" rx="18" ry="8" fill="#fff" opacity=".1"/>
+      </svg>
+    </div>
+  </div>
+
+  <div class="statusrow">
+    <div class="status" id="status">未连接 · 点击下方按钮接通</div>
+    <div class="timer" id="timer">00:00</div>
+  </div>
+
+  <div class="wave" id="wave"><i></i><i></i><i></i><i></i><i></i></div>
+
+  <div class="transcript" id="transcript">
+    <div class="bubble hint">接通后小P会先问候你。直接说话即可提问；说「开始面试」自动切换为模拟面试。</div>
+  </div>
+</div>
+
+<div class="footer">
+  <button id="callBtn" title="接通 / 挂断">📞<span class="lbl">接通</span></button>
+</div>
+
+<script>
+(function(){
+var d=document, w=window;
+var btn=d.getElementById('callBtn'), st=d.getElementById('status'),
+    tx=d.getElementById('transcript'), modeEl=d.getElementById('mode');
+if(!btn||!st||!tx)return;
+
+var V=w.__voiceState;
+if(!V){V=w.__voiceState={
+  active:false,ws:null,rec:null,buf:'',speaking:false,bound:false,recPaused:false,
+  audioCtx:null,playingAudio:false,replyEnded:false,suppressAudio:false,
+  sidData:{},playQueue:[],activeSources:[],nextPlaySid:0,playTime:0,pendingSources:0,
+  vadOn:false,vadHits:0,analyser:null,vadData:null,fallbackBySid:{},liveBubble:null,
+  echoRef:0,echoTicks:0,quietTicks:0,timerStart:0,timerInt:null,fallbackActive:0,
+  calPending:false,lastSend:0,lastSendText:''
+};}
+
+var VAD_THRESHOLD=__VAD_THRESHOLD__;
+var VAD_HITS=4;            // 连续超过阈值次数（约 240ms）才打断，过滤瞬时噪声
+var VAD_ECHO_FACTOR=2.2;   // 必须明显高于本段播报回声基准，才认为是真人在说话
+var VAD_CALIB_MS=900;      // 播报开头测量回声基准的时间窗（毫秒）
+var VAD_QUIET_FRAMES=3;    // 校准后还需连续安静几帧才允许打断（防止自己话尾误触发）
+
+function setStatus(t,busy){
+  st.textContent=t;
+  st.classList.toggle('busy',!!busy);
+}
+function setSpeakingUI(on){
+  var wave=d.getElementById('wave');
+  var av=d.querySelector('.avatar');
+  if(wave)wave.classList.toggle('on',on);
+  if(av)av.classList.toggle('glow',on);
+}
+function updateTimer(){
+  if(!V.active)return;
+  var el=d.getElementById('timer');
+  if(!el)return;
+  var s=Math.max(0,Math.floor((Date.now()-V.timerStart)/1000));
+  var m=Math.floor(s/60);
+  el.textContent=('0'+m).slice(-2)+':'+('0'+(s%60)).slice(-2);
+}
+function render(){
+  btn.innerHTML=V.active?'⏹<span class="lbl">挂断</span>':'📞<span class="lbl">接通</span>';
+  btn.classList.toggle('on',V.active);
+}
+function addBubble(role,text){
+  var div=d.createElement('div');
+  div.className='bubble '+role;
+  div.textContent=text;
+  tx.appendChild(div);
+  tx.scrollTop=tx.scrollHeight;
+  return div;
+}
+function updateLive(text){
+  if(!V.liveBubble)V.liveBubble=addBubble('assistant','');
+  V.liveBubble.textContent=text;
+  tx.scrollTop=tx.scrollHeight;
+}
+function setMode(m){
+  if(modeEl)modeEl.textContent=m;
+}
+
+function ensureAudio(){
+  if(!V.audioCtx){
+    try{var AC=w.AudioContext||w.webkitAudioContext;V.audioCtx=new AC();}catch(e){}
+  }
+}
+function pauseRec(){
+  if(V.recPaused)return;
+  V.recPaused=true;
+  if(V.rec){try{V.rec.onend=null;V.rec.stop();}catch(e){}V.rec=null;}
+}
+function resumeRec(){
+  if(!V.recPaused)return;
+  V.recPaused=false;
+  setTimeout(function(){
+    if(V.active&&!V.speaking&&!V.recPaused&&!V.rec)startRec();
+  },500);
+}
+function startRec(){
+  var R=w.SpeechRecognition||w.webkitSpeechRecognition;
+  if(!R){setStatus('请用 Chrome / Edge 浏览器');return;}
+  if(V.rec)return;
+  var rec=new R();
+  rec.lang='zh-CN';rec.continuous=true;rec.interimResults=true;
+  rec.onstart=function(){if(V.active)setStatus('聆听中…');};
+  rec.onresult=function(e){
+    var interim='',finalText='';
+    for(var i=0;i<e.results.length;i++){
+      var r=e.results[i];
+      if(r.isFinal)finalText+=r[0].transcript;else interim+=r[0].transcript;
+    }
+    if(finalText)sendText(finalText);
+    if((interim||finalText)&&V.active)setStatus('聆听中… '+(interim||finalText));
+  };
+  rec.onend=function(){if(V.active&&!V.recPaused){try{rec.start();}catch(e){}}};
+  rec.onerror=function(ev){if(ev.error!=='no-speech')setStatus('语音识别错误: '+ev.error);};
+  V.rec=rec;
+  try{rec.start();}catch(e){}
+}
+function stopRec(){V.recPaused=false;if(V.rec){try{V.rec.onend=null;V.rec.stop();}catch(e){}V.rec=null;}}
+function sendText(t){
+  if(V.ws&&V.ws.readyState===1){
+    var now=Date.now();
+    // 防抖：同一句最终识别结果 2 秒内不重复发送，避免连续打断自己刚触发的回复
+    if(V.lastSendText===t&&now-V.lastSend<2000)return;
+    V.lastSend=now;V.lastSendText=t;
+    V.replyEnded=false;V.buf='';V.liveBubble=null;
+    addBubble('user',t);
+    if(/(开始面试|模拟面试)/.test(t))setMode('模拟面试');
+    V.ws.send(JSON.stringify({type:'text',content:t}));
+    setStatus('小P思考中…',true);
+  }
+}
+
+/* ---- 音频：按 sid 缓冲、按序零间隙播放（消除句间停顿）---- */
+function base64ToBytes(b64){
+  var bin=atob(b64),bytes=new Uint8Array(bin.length);
+  for(var i=0;i<bin.length;i++)bytes[i]=bin.charCodeAt(i);
+  return bytes;
+}
+function onAudioStart(sid,text){
+  V.replyEnded=false;V.suppressAudio=false;
+  V.fallbackBySid[sid]=text||'';
+  if(V.nextPlaySid===0)V.nextPlaySid=sid;
+  if(!V.speaking){
+    pauseRec();V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
+    // 新一轮播报：等声音真正开始播放时再校准（大音频单元解码/调度需要时间，
+    // 若在 audio_start 就校准，静音窗口会被记成回声基准，声音一响就误判打断）
+    V.calPending=true;
+  }
+}
+function onAudioFrame(sid,b64){
+  ensureAudio();
+  if(!V.audioCtx||V.suppressAudio)return;
+  var bytes=base64ToBytes(b64);
+  var prev=V.sidData[sid];
+  var merged=new Uint8Array((prev?prev.length:0)+bytes.length);
+  if(prev)merged.set(prev,0);
+  merged.set(bytes,prev?prev.length:0);
+  V.sidData[sid]=merged;
+}
+function onAudioEnd(sid){
+  var bytes=V.sidData[sid];
+  delete V.sidData[sid];
+  delete V.fallbackBySid[sid];
+  if(!bytes||!bytes.length)return;
+  ensureAudio();
+  V.audioCtx.decodeAudioData(bytes.buffer.slice(0),function(buf){
+    if(V.suppressAudio)return;
+    V.playQueue.push({sid:sid,buf:buf});
+    V.playQueue.sort(function(a,b){return a.sid-b.sid;});
+    scheduleReady();
+  },function(){});
+}
+function scheduleReady(){
+  if(V.suppressAudio)return;
+  while(V.playQueue.length&&V.playQueue[0].sid===V.nextPlaySid){
+    var item=V.playQueue.shift();
+    playBuffer(item.buf);
+    V.nextPlaySid++;
+  }
+}
+function playBuffer(buf){
+  var src=V.audioCtx.createBufferSource();
+  src.buffer=buf;src.connect(V.audioCtx.destination);
+  var now=V.audioCtx.currentTime;
+  var t=Math.max(now+0.02,V.playTime); // 紧接上一段结束时间，零间隙
+  src.start(t);
+  if(V.calPending){
+    V.calPending=false;
+    // 从实际出声这一刻开始校准回声基准（解码/调度延迟不会再污染基准）
+    V.echoRef=0;V.echoTicks=0;V.quietTicks=0;V.vadHits=0;
+  }
+  V.activeSources.push(src); // 记录正在/将要播放的源，挂断时可强制停止
+  V.playTime=t+buf.duration;
+  V.pendingSources++;
+  V.playingAudio=true;
+  src.onended=function(){
+    var i=V.activeSources.indexOf(src);
+    if(i>=0)V.activeSources.splice(i,1);
+    if(V.pendingSources>0)V.pendingSources--;
+    if(V.pendingSources<=0){V.playingAudio=false;audioDone();}
+  };
+}
+function audioDone(){
+  if(V.pendingSources>0||V.fallbackActive>0)return; // WebAudio 块与本地降级语音都播完才算结束
+  V.speaking=false;
+  setSpeakingUI(false);
+  if(V.replyEnded&&V.active){setStatus('聆听中…');resumeRec();}
+}
+function stopAudio(){
+  V.playingAudio=false;V.suppressAudio=true;
+  V.pendingSources=0;V.playQueue=[];V.sidData={};
+  V.nextPlaySid=0;V.playTime=0;
+  V.fallbackActive=0;
+  setSpeakingUI(false);
+  while(V.activeSources.length){var s=V.activeSources.pop();try{s.stop();s.disconnect();}catch(e){}}
+  try{w.speechSynthesis.cancel();}catch(e){}
+}
+
+/* ---- 打断：VAD + 自适应回声基准（不被自己的播报误触发）---- */
+function bargeIn(){
+  if(!V.speaking)return;
+  stopAudio();
+  V.speaking=false;V.buf='';V.replyEnded=false;V.liveBubble=null;
+  setSpeakingUI(false);
+  if(V.ws&&V.ws.readyState===1){V.ws.send(JSON.stringify({type:'stop'}));}
+  setStatus('已打断，请继续');
+  resumeRec();
+}
+function initVAD(){
+  if(V.vadOn)return;
+  try{
+    w.navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
+    .then(function(stream){
+      V.vadOn=true;
+      ensureAudio();
+      var srcNode=V.audioCtx.createMediaStreamSource(stream);
+      V.analyser=V.audioCtx.createAnalyser();
+      V.analyser.fftSize=1024;
+      srcNode.connect(V.analyser);
+      V.vadData=new Uint8Array(V.analyser.fftSize);
+      vadLoop();
+    }).catch(function(){V.vadOn=false;});
+  }catch(e){}
+}
+function vadLoop(){
+  if(!V.active){V.vadHits=0;setTimeout(vadLoop,200);return;}
+  if(V.analyser&&V.vadData){
+    V.analyser.getByteTimeDomainData(V.vadData);
+    var sum=0;
+    for(var i=0;i<V.vadData.length;i++){var v=(V.vadData[i]-128)/128;sum+=v*v;}
+    var rms=Math.sqrt(sum/V.vadData.length);
+    if(V.speaking){
+      V.echoTicks++;
+      // 持续跟踪回声/环境噪声基准（快落慢升的噪声底），不受瞬时尖峰影响
+      if(rms>V.echoRef){V.echoRef+=0.08*(rms-V.echoRef);}else{V.echoRef=rms;}
+      if(V.echoTicks*60>=VAD_CALIB_MS){
+        var limit=Math.max(VAD_THRESHOLD,V.echoRef*VAD_ECHO_FACTOR);
+        // 校准完成后还需先安静片刻再武装，避免"自己话还没说完"误打断
+        if(rms<=limit){V.quietTicks++;}else{V.quietTicks=0;}
+        if(V.quietTicks>=VAD_QUIET_FRAMES){
+          if(rms>limit){V.vadHits++;}else{V.vadHits=0;}
+          if(V.vadHits>=VAD_HITS){V.vadHits=0;bargeIn();}
+        }
+      }
+    }else{V.vadHits=0;V.quietTicks=0;}
+  }
+  setTimeout(vadLoop,60);
+}
+
+/* ---- 回退：edge-tts 失败时用本地语音（自动挑选最自然的中文音色）---- */
+function pickVoice(){
+  var vs=w.speechSynthesis.getVoices();
+  if(!vs||!vs.length)return null;
+  var prefs=['Xiaoxiao','Xiaoyi','YunxiNeural','Xiaoyan','Huihui','Yaoyao','XiaoYun','Lili','zh-CN'];
+  for(var i=0;i<prefs.length;i++){
+    for(var j=0;j<vs.length;j++){
+      var name=vs[j].name||'';
+      if(name.indexOf(prefs[i])>=0)return vs[j];
+    }
+  }
+  for(var k=0;k<vs.length;k++){if((vs[k].lang||'').indexOf('zh')===0)return vs[k];}
+  return null;
+}
+function speakFallback(text){
+  if(!text)return;
+  if(!V.speaking){
+    pauseRec();V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
+    // 本地语音立即出声，这里直接开始校准
+    V.calPending=false;V.echoRef=0;V.echoTicks=0;V.quietTicks=0;V.vadHits=0;
+  }
+  V.fallbackActive++;
+  var u=new SpeechSynthesisUtterance(text);
+  u.lang='zh-CN';u.rate=0.95;u.pitch=1.1;
+  var voice=pickVoice();if(voice)u.voice=voice;
+  function fallbackEnd(){
+    V.fallbackActive=Math.max(0,V.fallbackActive-1);
+    audioDone();
+  }
+  u.onend=fallbackEnd;
+  u.onerror=fallbackEnd;
+  try{w.speechSynthesis.speak(u);}catch(e){}
+}
+
+function connect(){
+  ensureAudio();
+  initVAD();
+  try{w.speechSynthesis.getVoices();}catch(e){}
+  var proto=(w.location.protocol==='https:')?'wss://':'ws://';
+  var url=proto+w.location.host+'/ws/voice';
+  V.active=true;render();setStatus('正在接通…',true);
+  var ws;
+  try{ws=new WebSocket(url);}catch(e){setStatus('无法连接语音服务');V.active=false;render();return;}
+  V.ws=ws;
+  V.timerStart=Date.now();
+  if(V.timerInt)clearInterval(V.timerInt);
+  V.timerInt=setInterval(updateTimer,1000);
+  updateTimer();
+  ws.onopen=function(){setStatus('通话已接通，请说话');startRec();};
+  ws.onmessage=function(ev){
+    var m;
+    try{m=JSON.parse(ev.data);}catch(e){return;}
+    if(m.type==='reply_start'){V.replyEnded=false;V.suppressAudio=false;V.nextPlaySid=m.first_sid||0;}
+    else if(m.type==='delta'){V.buf+=m.content;updateLive(V.buf);}
+    else if(m.type==='audio_start')onAudioStart(m.sid,m.text);
+    else if(m.type==='audio')onAudioFrame(m.sid,m.data);
+    else if(m.type==='audio_end')onAudioEnd(m.sid);
+    else if(m.type==='tts_error')speakFallback(V.fallbackBySid[m.sid]||'');
+    else if(m.type==='done'){V.replyEnded=true;setTimeout(audioDone,300);}
+    else if(m.type==='cancelled'){V.buf='';setStatus('已打断，请继续');}
+    else if(m.type==='error')setStatus('小P出错了: '+m.message,true);
+  };
+  ws.onclose=function(){
+    var wasActive=V.active;
+    V.ws=null;stopRec();stopAudio();
+    V.buf='';V.speaking=false;V.active=false;V.liveBubble=null;render();
+    if(V.timerInt){clearInterval(V.timerInt);V.timerInt=null;}
+    if(wasActive)setStatus('通话已断开');
+  };
+  ws.onerror=function(){setStatus('连接语音服务失败，请确认已启动 voice_server',true);};
+}
+function hangup(){
+  V.active=false;render();
+  stopRec();stopAudio();
+  V.speaking=false;V.buf='';V.liveBubble=null;
+  if(V.timerInt){clearInterval(V.timerInt);V.timerInt=null;}
+  if(V.ws){try{V.ws.close();}catch(e){}}
+  V.ws=null;
+  setStatus('已挂断');setTimeout(function(){st.textContent='未连接 · 点击下方按钮接通';st.classList.remove('busy');var el=d.getElementById('timer');if(el)el.textContent='00:00';},1500);
+}
+if(!V.bound){
+  V.bound=true;
+  btn.onclick=function(){
+    if(!V.active){connect();return;}
+    hangup(); // 按钮=挂断；语音打断由 VAD（开口说话）负责
+  };
+  w.addEventListener('beforeunload',function(){
+    try{V.active=false;stopRec();stopAudio();if(V.ws)V.ws.close();V.ws=null;}catch(e){}
+  });
+}
+render();
+setMode('辅导答疑');
+})();
+</script>
+</body>
+</html>

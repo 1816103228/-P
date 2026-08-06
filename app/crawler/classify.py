@@ -7,6 +7,7 @@
 
 优化：要求 json_object 结构化输出；解析失败自动重试一次并追加纠错提示。
 """
+
 import argparse
 import json
 import logging
@@ -20,13 +21,28 @@ logger = logging.getLogger("interview_coach.crawler.classify")
 
 # 标准标签池（与模拟面试六阶段对应）
 KNOWN_TAGS = [
-    "Python基础", "数据结构",
-    "算法-排序", "算法-动态规划", "算法-双指针", "算法-树图",
-    "算法-贪心", "算法-二分", "算法-回溯", "算法-数学", "算法-其他",
-    "数据库", "Redis",
-    "网络-HTTP", "网络-TCP", "网络-其他",
-    "操作系统", "并发",
-    "系统设计", "项目经验", "设计模式", "框架工具",
+    "Python基础",
+    "数据结构",
+    "算法-排序",
+    "算法-动态规划",
+    "算法-双指针",
+    "算法-树图",
+    "算法-贪心",
+    "算法-二分",
+    "算法-回溯",
+    "算法-数学",
+    "算法-其他",
+    "数据库",
+    "Redis",
+    "网络-HTTP",
+    "网络-TCP",
+    "网络-其他",
+    "操作系统",
+    "并发",
+    "系统设计",
+    "项目经验",
+    "设计模式",
+    "框架工具",
     "其他",
 ]
 
@@ -144,7 +160,7 @@ def classify_all(limit: int | None = None, dry_run: bool = False) -> None:
             print("  [警告] 本批解析失败，跳过（可重跑）")
             continue
 
-        for row, tags in zip(batch_rows, tags_list):
+        for row, tags in zip(batch_rows, tags_list, strict=False):
             if tags:
                 done += 1
                 tag_str = ",".join(tags)

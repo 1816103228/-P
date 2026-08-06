@@ -1,9 +1,16 @@
 .git
+.github
+.reasonix
 .venv
 venv
 env
 __pycache__
 *.pyc
+tests
+scripts
+*.egg-info
+.pytest_cache
+.ruff_cache
 data/*.log
 data/*.lock
 .env

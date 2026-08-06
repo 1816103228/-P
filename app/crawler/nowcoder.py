@@ -6,6 +6,7 @@
 2. 题库：https://www.nowcoder.com/exam/company/...（登录后可用）
 待验证可稳定抓取后再实现 fetch()。
 """
+
 from app.crawler.base import SourceAdapter
 
 

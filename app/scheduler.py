@@ -8,13 +8,13 @@
 - 增量去重由 content_hash 保证，重复抓取不会产生冗余数据；
 - 日志使用 RotatingFileHandler 轮转，避免无限增长。
 """
+
 import atexit
 import logging
 import os
 import sys
 from datetime import datetime
 from logging.handlers import RotatingFileHandler
-from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -35,7 +35,7 @@ def acquire_scheduler_lock() -> bool:
     config.ensure_data_dir()
     lock_path = config.DATA_DIR / "scheduler.lock"
     try:
-        fh = open(lock_path, "a+")
+        fh = open(lock_path, "a+")  # noqa: SIM115 - 句柄需长期持有（_lock_handles）以保持 OS 文件锁
         if sys.platform == "win32":
             import msvcrt
 
@@ -73,7 +73,7 @@ def _crawl_job() -> None:
         logger.exception("定时爬取任务失败: %s", e)
 
 
-def start_scheduler() -> Optional[BackgroundScheduler]:
+def start_scheduler() -> BackgroundScheduler | None:
     """启动后台调度器（幂等）。返回 None 表示未启动（被禁用或已有实例）。"""
     global _scheduler
     if _scheduler is not None and _scheduler.running:
@@ -126,8 +126,7 @@ def setup_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     if not any(
-        isinstance(h, RotatingFileHandler) and getattr(h, "_msya_log", False)
-        for h in root.handlers
+        isinstance(h, RotatingFileHandler) and getattr(h, "_msya_log", False) for h in root.handlers
     ):
         fh = RotatingFileHandler(
             config.DATA_DIR / "scheduler.log",

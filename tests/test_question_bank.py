@@ -1,19 +1,24 @@
 """题库浏览功能验证（标准库 unittest）。
 
 运行：
-    python -m unittest app.tests.test_question_bank -v
+    python -m unittest tests.test_question_bank -v
 
 注意：设置 DISABLE_SCHEDULER=1 避免 AppTest 触发真实后台爬虫；
 数据类测试在空库时自动跳过（先跑爬虫抓取）。
 """
+
 import os
 import unittest
+from pathlib import Path
 from unittest import mock
 
 os.environ["DISABLE_SCHEDULER"] = "1"
 
 from app import db
 from app.agent.coach import InterviewSession
+
+# AppTest.from_file 的相对路径按调用文件解析，这里显式指向 Web 入口
+WEB_ENTRY = Path(__file__).resolve().parents[1] / "app" / "ui" / "web.py"
 
 
 class QuestionBankChecks(unittest.TestCase):
@@ -65,8 +70,6 @@ class QuestionBankChecks(unittest.TestCase):
         self.assertEqual(s.answers, [], "旧答案不应残留")
 
 
-
-
 class UITest(unittest.TestCase):
     """Web 界面渲染与空题库兜底检查（AppTest/状态机，不依赖真实题库）。"""
 
@@ -90,7 +93,7 @@ class UITest(unittest.TestCase):
     def test_bank_expander_renders(self):
         from streamlit.testing.v1 import AppTest
 
-        at = AppTest.from_file("main.py", default_timeout=60)
+        at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
         at.run()
         self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
         self.assertGreaterEqual(len(at.expander), 1, "应存在题库浏览 expander")
@@ -99,11 +102,10 @@ class UITest(unittest.TestCase):
 
     def test_ask_question_from_bank_switches_to_mock_mode(self):
         """辅导答疑模式下点「出这道题」→ 模式应切回模拟面试，保证后续回答进入面试流程。"""
+        from app.agent.coach import InterviewSession
         from streamlit.testing.v1 import AppTest
 
-        from app.agent.coach import InterviewSession
-
-        at = AppTest.from_file("main.py", default_timeout=60)
+        at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
         at.session_state["session"] = InterviewSession("coach")  # 预设辅导答疑会话
         at.run()
         bank = at.expander[0]

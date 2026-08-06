@@ -1,6 +1,6 @@
 @echo off
 setlocal enabledelayedexpansion
-cd /d %~dp0
+cd /d %~dp0..
 
 echo ============================================
 echo   面试官小P - Python/后端面试 Agent
@@ -14,25 +14,25 @@ if errorlevel 1 (
     exit /b 1
 )
 
-echo [1/6] 检查依赖...
+echo [1/6] 安装依赖...
 set "PIP_OK="
 for %%i in (1 2 3) do (
     if not defined PIP_OK (
         echo   第 %%i 次尝试安装依赖...
-        python -m pip install -r requirements.txt --quiet --disable-pip-version-check
+        python -m pip install -e . --quiet --disable-pip-version-check
         if not errorlevel 1 set "PIP_OK=1"
     )
 )
 if not defined PIP_OK (
-    echo   当前镜像源不可用，改用官方 PyPI 重试...
-    python -m pip install -r requirements.txt --quiet --disable-pip-version-check --index-url https://pypi.org/simple
+    echo   当前镜像源不可用，改用官方 PyPI 安装...
+    python -m pip install -e . --quiet --disable-pip-version-check --index-url https://pypi.org/simple
     if errorlevel 1 (
-        echo [错误] 依赖安装失败，请检查网络后重试
+        echo [错误] 依赖安装失败，请检查网络连接
         pause
         exit /b 1
     )
 )
-echo [OK] 依赖就绪
+echo [OK] 依赖安装完成
 
 echo [2/6] 检测端口...
 
@@ -44,18 +44,19 @@ if not errorlevel 1 (
 )
 
 echo [3/6] 启动语音通话服务...
-start "MianShiGuanXiaoP-Voice" python -m uvicorn voice_server:app --host 127.0.0.1 --port 8765
+set "WEB_URL=http://localhost:!PORT!"
+start "MianShiGuanXiaoP-Voice" cmd /c "set WEB_URL=http://localhost:!PORT!&&python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765"
 
 echo [4/6] 启动 Web 服务...
-start "MianShiGuanXiaoP-Server" python -m streamlit run main.py --server.headless true --server.port !PORT!
+start "MianShiGuanXiaoP-Server" python -m streamlit run app/ui/web.py --server.headless true --server.port !PORT!
 
-echo [5/6] 等待服务启动...
+echo [5/6] 等待服务就绪...
 timeout /t 5 /nobreak >nul
 
-echo [6/6] 检测语音服务...
+echo [6/6] 检查语音服务...
 powershell -NoProfile -Command "try{$r=Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 3; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}"
 if errorlevel 1 (
-    echo [警告] 语音服务未就绪（8765 端口），网页仍可正常使用
+    echo [警告] 语音服务可能未启动成功（8765 端口），文字版仍可使用
     echo        请查看「MianShiGuanXiaoP-Voice」窗口中的报错
 ) else (
     echo [OK] 语音服务已就绪
@@ -66,9 +67,10 @@ start "" "http://localhost:!PORT!"
 
 echo.
 echo ============================================
-echo   浏览器已打开
-echo   地址: http://localhost:!PORT!
-echo   若未弹出请手动复制地址访问
+echo   服务已全部启动
+echo   文字版:   http://localhost:!PORT!
+echo   语音通话: http://127.0.0.1:8765/
+echo   （文字版右下角的电话按钮也会打开语音通话页）
 echo   停止: 关闭「MianShiGuanXiaoP-Server」与「MianShiGuanXiaoP-Voice」窗口
 echo ============================================
 pause

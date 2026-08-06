@@ -4,6 +4,7 @@
     python -m app.crawler.run                # 全量抓取
     python -m app.crawler.run --limit 2      # 每源限 2 页/条（调试用）
 """
+
 import argparse
 
 from app.crawler import leetcode, mianshiya, nowcoder
@@ -30,7 +31,8 @@ def crawl_all(limit_per_source: int | None = None) -> list[dict]:
     return results
 
 
-if __name__ == "__main__":
+def main() -> None:
+    """命令行入口：解析参数并执行全量抓取。"""
     from app import db
 
     parser = argparse.ArgumentParser()
@@ -39,3 +41,7 @@ if __name__ == "__main__":
 
     db.init_db()
     crawl_all(limit_per_source=args.limit)
+
+
+if __name__ == "__main__":
+    main()

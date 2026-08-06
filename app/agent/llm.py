@@ -5,10 +5,12 @@
 - 可选 response_format（如 json_object）用于结构化输出；
 - 请求级日志：记录耗时与 token 用量，便于成本观测。
 """
+
 import logging
 import random
 import time
 
+from app import config
 from openai import (
     APIConnectionError,
     APIStatusError,
@@ -16,8 +18,6 @@ from openai import (
     OpenAI,
     RateLimitError,
 )
-
-from app import config
 
 logger = logging.getLogger("interview_coach.llm")
 
@@ -58,7 +58,7 @@ def get_client() -> OpenAI:
 
 def _retry_wait(attempt: int) -> float:
     """指数退避 + 随机抖动，最多等 30s。"""
-    return min(2 ** attempt, 30) + random.uniform(0, 0.5)
+    return min(2**attempt, 30) + random.uniform(0, 0.5)
 
 
 def _build_kwargs(

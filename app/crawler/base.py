@@ -6,6 +6,7 @@ fetch() 返回的每个 dict 是 app.db.upsert_question 的 kwargs：
 
 make_session() 提供带重试与连接复用的 requests.Session，各适配器共享。
 """
+
 from abc import ABC, abstractmethod
 
 import requests

@@ -1,19 +1,18 @@
-"""面试官小P - Streamlit 聊天界面（主入口，单一实现）。
+"""面试官小P - Streamlit 聊天界面（Web 入口，单一实现）。
 
-包含：模拟面试 / 辅导答疑双模式、题库浏览、侧边栏统计、
-语音交互（语音输入 + 回答播报）与虚拟人物动画。
+包含：模拟面试 / 辅导答疑双模式、题库浏览、侧边栏统计、虚拟人物动画，
+以及独立语音通话页（方案A：FastAPI 直接托管，右下角按钮新标签页打开）的入口。
 
 启动：
-    streamlit run main.py
-或双击项目根目录的 启动.bat。
+    streamlit run app/ui/web.py
+或双击 scripts/start.bat（Windows）/ 运行 scripts/start.sh（macOS / Linux）。
 """
+
 import logging
 import os
 import threading
-from pathlib import Path
 
 import streamlit as st
-import streamlit.components.v1 as components
 
 from app import config
 from app.agent.coach import InterviewSession, generate_interview_questions
@@ -56,9 +55,11 @@ if not is_api_key_configured():
 # ---- CSS ----
 st.markdown(
     """<style>
+.stApp { background:linear-gradient(170deg,#f6f8ff 0%,#eef1fb 55%,#e9edf8 100%); }
+[data-testid="stSidebar"] { background:rgba(255,255,255,.72); backdrop-filter:blur(10px); }
 .block-container { padding:0!important; max-width:600px!important; }
 /* 人物居中 */
-.av-center { display:flex; flex-direction:column; align-items:center; padding:18px 0 8px 0; }
+.av-center { display:flex; flex-direction:column; align-items:center; padding:18px 0 8px 0; background:rgba(255,255,255,.68); border-radius:22px; box-shadow:0 10px 30px rgba(31,45,89,.08); margin:8px 12px 2px; backdrop-filter:blur(10px); }
 .av-fig { animation: br 4.5s ease-in-out infinite; }
 .av-fig svg { display:block; }
 @keyframes br { 0%,100%{transform:translateY(0) rotate(0deg)} 25%{transform:translateY(-5px) rotate(-.5deg)} 75%{transform:translateY(-3px) rotate(.5deg)} }
@@ -77,14 +78,15 @@ st.markdown(
 @keyframes dp { 0%,100%{opacity:1} 50%{opacity:.3} }
 /* 顶栏 */
 .top { display:flex; justify-content:center; gap:8px; margin:4px 0; flex-wrap:wrap; }
-.stChatMessage { border-radius:14px!important; }
+.stChatMessage { border-radius:16px!important; box-shadow:0 3px 12px rgba(31,45,89,.06); }
 [data-testid="stChatInput"] textarea { border-radius:12px!important; }
+.stButton button { border-radius:12px; font-weight:600; }
+[data-testid="stExpander"] { border-radius:14px; border:1px solid rgba(31,45,89,.08)!important; background:rgba(255,255,255,.55); }
 /* 语音通话按钮 */
-#vccall { position:fixed; bottom:28px; right:28px; z-index:9999; width:64px; height:64px; border-radius:50%; background:#4f6ef7; border:none; cursor:pointer; box-shadow:0 4px 18px rgba(79,110,247,.35); display:flex; align-items:center; justify-content:center; font-size:26px; transition:all .25s; color:#fff; }
+#vccall { position:fixed; bottom:28px; right:28px; z-index:9999; width:64px; height:64px; border-radius:50%; background:#4f6ef7; border:none; cursor:pointer; box-shadow:0 4px 18px rgba(79,110,247,.35); display:flex; align-items:center; justify-content:center; font-size:26px; transition:all .25s; color:#fff; text-decoration:none; }
 #vccall:hover { transform:scale(1.08); box-shadow:0 6px 24px rgba(79,110,247,.5); }
 #vccall.on { background:#e74c3c; animation:micPulse .9s ease-in-out infinite; }
 @keyframes micPulse { 0%,100%{box-shadow:0 0 0 0 rgba(231,76,60,.5)} 50%{box-shadow:0 0 0 16px rgba(231,76,60,0)} }
-#vcstatus { position:fixed; bottom:104px; right:28px; z-index:9999; background:#fff; border-radius:10px; padding:6px 14px; font-size:13px; color:#333; box-shadow:0 2px 10px rgba(0,0,0,.12); display:none; max-width:300px; white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
 </style>""",
     unsafe_allow_html=True,
 )
@@ -116,7 +118,14 @@ def clear_all():
 # ---- 顶栏 ----
 c1, c2, c3 = st.columns([2, 1, 1])
 with c1:
-    st.radio("模式", ["模拟面试", "辅导答疑"], index=0, horizontal=True, label_visibility="collapsed", key="mode")
+    st.radio(
+        "模式",
+        ["模拟面试", "辅导答疑"],
+        index=0,
+        horizontal=True,
+        label_visibility="collapsed",
+        key="mode",
+    )
 with c2:
     st.button("开始面试", use_container_width=True, type="primary", on_click=start_mock)
 with c3:
@@ -189,17 +198,11 @@ if prompt:
             st.error(reply)
     st.session_state.history.append(("assistant", reply or "小P暂时无法回答，请稍后重试。"))
 
-# ---- 语音通话（像打电话一样：边说边答、随时打断）----
-# 可见元素：通话按钮 + 状态条
+# ---- 语音通话（方案A：独立语音通话页，像打电话一样）----
+# 右下角按钮在新标签页打开 FastAPI 直接托管的语音通话页（http://{host}:{port}/），
+# 不受 Streamlit rerun / iframe 限制，通话过程与文字版完全隔离。
+voice_url = f"http://{config.VOICE_HOST}:{config.VOICE_PORT}/"
 st.markdown(
-    '<div id="vccall">📞</div><div id="vcstatus">未连接</div>',
+    f'<a id="vccall" href="{voice_url}" target="_blank" title="打开独立语音通话页">📞</a>',
     unsafe_allow_html=True,
-)
-# JS 通过 iframe 注入并操作父窗口 DOM；状态挂在 parent.__voiceState，
-# 这样 Streamlit 重跑时只重新绑定按钮，不会断开通话。
-voice_js = (Path(__file__).resolve().parent / "app" / "ui" / "voice_script.js").read_text(encoding="utf-8")
-components.html(
-    voice_js.replace("__VOICE_PORT__", str(config.VOICE_PORT))
-            .replace("__VAD_THRESHOLD__", str(config.VOICE_VAD_THRESHOLD)),
-    height=0,
 )

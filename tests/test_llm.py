@@ -1,4 +1,5 @@
 """LLM 层测试：重试、失败熔断、流式输出（全部 mock，不触网）。"""
+
 import unittest
 from unittest import mock
 
@@ -46,9 +47,11 @@ class LLMTests(unittest.TestCase):
     def test_chat_retries_exhausted(self, mock_sleep):
         client = mock.Mock()
         client.chat.completions.create.side_effect = ConnectionError("boom")
-        with mock.patch.object(llm, "get_client", return_value=client):
-            with self.assertRaises(ConnectionError):
-                llm.chat([{"role": "user", "content": "hi"}], max_retries=2)
+        with (
+            mock.patch.object(llm, "get_client", return_value=client),
+            self.assertRaises(ConnectionError),
+        ):
+            llm.chat([{"role": "user", "content": "hi"}], max_retries=2)
         self.assertEqual(mock_sleep.call_count, 2)
 
     def test_chat_stream_yields_deltas(self):
