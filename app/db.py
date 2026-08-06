@@ -37,6 +37,29 @@ CREATE TABLE IF NOT EXISTS questions (
 CREATE INDEX IF NOT EXISTS idx_questions_source ON questions(source);
 CREATE INDEX IF NOT EXISTS idx_questions_tags ON questions(tags);
 CREATE INDEX IF NOT EXISTS idx_questions_difficulty ON questions(difficulty);
+
+CREATE TABLE IF NOT EXISTS sessions (
+    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+    mode        TEXT NOT NULL,              -- mock / coach
+    job_title   TEXT,                       -- 定制面试目标岗位
+    jd          TEXT,                       -- 定制面试招聘信息
+    source      TEXT,                       -- 题库 / 定制
+    started_at  TEXT NOT NULL,              -- 开始时间（ISO 8601）
+    score       INTEGER,                    -- 报告总分（0-100）
+    report      TEXT,                       -- 总结报告全文
+    weak_points TEXT                        -- 薄弱点清单（每行一条）
+);
+
+CREATE TABLE IF NOT EXISTS session_answers (
+    id             INTEGER PRIMARY KEY AUTOINCREMENT,
+    session_id     INTEGER NOT NULL REFERENCES sessions(id),
+    stage          TEXT,                    -- 阶段名（如 Python基础 / 定制题 1）
+    question_title TEXT,
+    answer         TEXT
+);
+
+CREATE INDEX IF NOT EXISTS idx_sessions_started ON sessions(started_at DESC);
+CREATE INDEX IF NOT EXISTS idx_session_answers_sid ON session_answers(session_id);
 """
 
 #: FTS5 外部内容表：与 questions 通过 rowid 关联，触发器保持同步
@@ -96,6 +119,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
             logger.warning("FTS5 不可用（%s），全文检索将回退 LIKE 检索", e)
         conn.execute("PRAGMA user_version = 1")
         logger.info("数据库迁移至版本 1：新增 FTS5 全文索引")
+    if version < 2:
+        conn.execute("PRAGMA user_version = 2")
+        logger.info("数据库迁移至版本 2：新增面试记录表（sessions / session_answers）")
     _sync_fts(conn)
 
 
@@ -264,6 +290,64 @@ def get_question_by_id(qid: int):
     """按 id 取单条题目（题库浏览→出这道题 用）。"""
     with closing(get_conn()) as conn:
         return conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
+
+
+def create_session(
+    mode: str,
+    job_title: str = "",
+    jd: str = "",
+    source: str = "",
+    started_at: str | None = None,
+) -> int:
+    """创建一条面试记录，返回 session_id。"""
+    started_at = started_at or datetime.now(timezone.utc).isoformat()
+    with closing(get_conn()) as conn, conn:
+        cur = conn.execute(
+            "INSERT INTO sessions (mode, job_title, jd, source, started_at) VALUES (?,?,?,?,?)",
+            (mode, job_title or None, jd or None, source or None, started_at),
+        )
+        return cur.lastrowid
+
+
+def add_session_answers(session_id: int, answers: list[dict]) -> None:
+    """批量写入一轮面试的问答记录。"""
+    if not answers:
+        return
+    rows = [(session_id, a.get("stage"), a.get("title"), a.get("answer")) for a in answers]
+    with closing(get_conn()) as conn, conn:
+        conn.executemany(
+            "INSERT INTO session_answers (session_id, stage, question_title, answer) "
+            "VALUES (?,?,?,?)",
+            rows,
+        )
+
+
+def finish_session(
+    session_id: int, score: int | None, report: str, weak_points: str | None
+) -> None:
+    """面试结束后回填评分、报告与薄弱点。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute(
+            "UPDATE sessions SET score=?, report=?, weak_points=? WHERE id=?",
+            (score, report, weak_points, session_id),
+        )
+
+
+def list_sessions(limit: int = 50) -> list[sqlite3.Row]:
+    """已完成的面试记录（按开始时间倒序，供侧边栏复盘）。"""
+    with closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT * FROM sessions WHERE report IS NOT NULL ORDER BY started_at DESC LIMIT ?",
+            (limit,),
+        ).fetchall()
+
+
+def get_session_answers(session_id: int) -> list[sqlite3.Row]:
+    """按会话取逐题问答记录。"""
+    with closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT * FROM session_answers WHERE session_id=? ORDER BY id", (session_id,)
+        ).fetchall()
 
 
 def latest_questions(source: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
