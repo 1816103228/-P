@@ -25,16 +25,11 @@ body {
 .top .title { font-size:17px; font-weight:700; letter-spacing:1px; }
 .mode { font-size:12px; color:#ffd166; background:rgba(255,209,102,.12); border:1px solid rgba(255,209,102,.35); padding:2px 10px; border-radius:999px; white-space:nowrap; }
 .avatar { display:flex; justify-content:center; padding:8px 0 0; }
-.avatar.glow svg { filter:drop-shadow(0 0 28px rgba(109,134,245,.65)); transition:filter .35s ease; }
+.avatar img { width:230px; height:230px; object-fit:cover; object-position:center 28%; border-radius:50%;
+  border:3px solid rgba(255,255,255,.22); box-shadow:0 16px 42px rgba(10,16,34,.55); display:block; }
+.avatar.glow img { filter:drop-shadow(0 0 28px rgba(109,134,245,.75)); transition:filter .35s ease; }
 .av-fig { animation: br 4.5s ease-in-out infinite; }
 @keyframes br { 0%,100%{transform:translateY(0) rotate(0deg)} 25%{transform:translateY(-5px) rotate(-.5deg)} 75%{transform:translateY(-3px) rotate(.5deg)} }
-.av-eye { animation: bl 4.5s ease-in-out infinite; transform-origin:center; }
-.av-eye.r { animation-delay:.18s; }
-@keyframes bl { 0%,96%,100%{transform:scaleY(1)} 98%{transform:scaleY(.08)} }
-.mc { animation: tc 3.5s ease-in-out infinite; }
-.mo { opacity:0; animation: to 3.5s ease-in-out infinite; }
-@keyframes tc { 0%,43%,100%{opacity:1} 51%{opacity:0} }
-@keyframes to { 0%,43%,100%{opacity:0} 51%{opacity:1} }
 .statusrow { display:flex; align-items:center; justify-content:center; gap:10px; margin-top:16px; }
 .status { min-width:170px; text-align:center; font-size:14px; color:#d7e0f5; background:rgba(255,255,255,.08); border:1px solid rgba(255,255,255,.14); padding:7px 18px; border-radius:999px; backdrop-filter:blur(8px); }
 .status.busy { color:#ffd166; border-color:rgba(255,209,102,.45); }
@@ -69,37 +64,7 @@ body {
 
   <div class="avatar">
     <div class="av-fig">
-      <svg width="190" height="250" viewBox="0 0 160 216" xmlns="http://www.w3.org/2000/svg">
-        <defs>
-          <radialGradient id="face" cx="48%" cy="35%"><stop offset="0%" stop-color="#ffead4"/><stop offset="55%" stop-color="#f5cfaa"/><stop offset="100%" stop-color="#d4a574"/></radialGradient>
-          <radialGradient id="cheek" cx="50%" cy="50%"><stop offset="0%" stop-color="#f0a0a0" stop-opacity=".5"/><stop offset="100%" stop-color="#f0a0a0" stop-opacity="0"/></radialGradient>
-          <linearGradient id="suit" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#3a4f63"/><stop offset="100%" stop-color="#1e2c3a"/></linearGradient>
-          <linearGradient id="tie" x1="0" y1="0" x2="1" y2="1"><stop offset="0%" stop-color="#e74c3c"/><stop offset="100%" stop-color="#a93226"/></linearGradient>
-          <linearGradient id="hair" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="#2c3e50"/><stop offset="100%" stop-color="#1a252f"/></linearGradient>
-        </defs>
-        <!-- 身体西装 --><rect x="26" y="105" width="108" height="80" rx="14" fill="url(#suit)"/>
-        <!-- 衬衫 --><path d="M50,104 L80,130 L110,104" fill="#f8f9fa" stroke="url(#suit)" stroke-width="1"/>
-        <!-- 领带 --><polygon points="80,106 66,138 80,162 94,138" fill="url(#tie)"/>
-        <!-- 左臂 --><rect x="10" y="118" width="20" height="50" rx="10" fill="url(#suit)"/>
-        <!-- 右臂 --><rect x="130" y="118" width="20" height="50" rx="10" fill="url(#suit)"/>
-        <!-- 左手 --><ellipse cx="20" cy="170" rx="11" ry="13" fill="#f5cfaa"/>
-        <!-- 右手 --><ellipse cx="140" cy="170" rx="11" ry="13" fill="#f5cfaa"/>
-        <!-- 脖子 --><rect x="66" y="95" width="28" height="16" rx="6" fill="#eac09e"/>
-        <!-- 头部 --><ellipse cx="80" cy="60" rx="48" ry="56" fill="url(#face)"/>
-        <!-- 耳朵 --><ellipse cx="30" cy="62" rx="8" ry="14" fill="#eac09e"/><ellipse cx="130" cy="62" rx="8" ry="14" fill="#eac09e"/>
-        <!-- 头发 --><path d="M32,45 Q32,0 80,-4 Q128,0 128,45 Q128,28 80,24 Q32,28 32,45" fill="url(#hair)"/>
-        <path d="M34,30 Q56,16 80,14 Q104,16 126,30" fill="#3d566e" opacity=".6"/>
-        <!-- 腮红 --><ellipse cx="48" cy="75" rx="14" ry="9" fill="url(#cheek)"/><ellipse cx="112" cy="75" rx="14" ry="9" fill="url(#cheek)"/>
-        <!-- 眼镜框 --><rect x="42" y="48" width="32" height="20" rx="6" fill="#f8f9fa" stroke="#2c3e50" stroke-width="2.2"/><rect x="86" y="48" width="32" height="20" rx="6" fill="#f8f9fa" stroke="#2c3e50" stroke-width="2.2"/>
-        <!-- 眼镜腿 --><line x1="34" y1="58" x2="42" y2="58" stroke="#2c3e50" stroke-width="2"/><line x1="118" y1="58" x2="126" y2="58" stroke="#2c3e50" stroke-width="2"/>
-        <!-- 眼镜桥 --><line x1="74" y1="57" x2="86" y2="57" stroke="#2c3e50" stroke-width="2"/>
-        <!-- 左眼 --><ellipse class="av-eye" cx="58" cy="57" rx="6" ry="7" fill="#1a1a2e"/><circle cx="60" cy="54" r="2" fill="#fff"/>
-        <!-- 右眼 --><ellipse class="av-eye r" cx="102" cy="57" rx="6" ry="7" fill="#1a1a2e"/><circle cx="104" cy="54" r="2" fill="#fff"/>
-        <!-- 眉毛 --><path d="M44,42 Q58,36 68,44" fill="none" stroke="#1a1a2e" stroke-width="2.5" stroke-linecap="round"/><path d="M92,44 Q102,36 116,42" fill="none" stroke="#1a1a2e" stroke-width="2.5" stroke-linecap="round"/>
-        <!-- 闭嘴 --><path class="mc" d="M66,85 Q80,92 94,85" fill="none" stroke="#1a1a2e" stroke-width="2.3" stroke-linecap="round"/>
-        <!-- 张嘴 --><ellipse class="mo" cx="80" cy="85" rx="8" ry="5" fill="#1a1a2e"/>
-        <!-- 高光 --><ellipse cx="60" cy="30" rx="18" ry="8" fill="#fff" opacity=".1"/>
-      </svg>
+      <img src="/assets/avatar.png" alt="面试官小P">
     </div>
   </div>
 
@@ -131,16 +96,16 @@ if(!V){V=w.__voiceState={
   active:false,ws:null,rec:null,buf:'',speaking:false,bound:false,recPaused:false,
   audioCtx:null,playingAudio:false,replyEnded:false,suppressAudio:false,
   sidData:{},playQueue:[],activeSources:[],nextPlaySid:0,playTime:0,pendingSources:0,
-  vadOn:false,vadHits:0,analyser:null,vadData:null,fallbackBySid:{},liveBubble:null,
-  echoRef:0,echoTicks:0,quietTicks:0,timerStart:0,timerInt:null,fallbackActive:0,
-  calPending:false,lastSend:0,lastSendText:''
+  fallbackBySid:{},liveBubble:null,
+  timerStart:0,timerInt:null,fallbackActive:0,
+  lastSend:0,lastSendText:'',
+  vadOn:false,analyser:null,vadData:null,vadHits:0,quietTicks:0,bargeArmed:false
 };}
 
+// 打断用固定音量阈值（回声由 getUserMedia 的回声消除处理，麦克风残留远低于人声）
 var VAD_THRESHOLD=__VAD_THRESHOLD__;
-var VAD_HITS=3;            // 连续超过阈值次数（约 180ms）才打断，过滤瞬时噪声
-var VAD_ECHO_FACTOR=1.8;   // 必须明显高于本段播报回声基准，才认为是真人在说话
-var VAD_CALIB_MS=900;      // 播报开头测量回声基准的时间窗（毫秒）
-var VAD_QUIET_FRAMES=2;    // 校准后还需连续安静几帧才允许打断（防止自己话尾误触发）
+var VAD_HITS=3;          // 连续超阈值约 180ms 才打断，过滤瞬时噪声
+var VAD_QUIET_FRAMES=2;  // 播报开始后需先安静片刻再武装，防止自己话尾误打断
 
 function setStatus(t,busy){
   st.textContent=t;
@@ -180,6 +145,19 @@ function updateLive(text){
 function setMode(m){
   if(modeEl)modeEl.textContent=m;
 }
+function fetchCustomStatus(){
+  // 文字版生成定制面试后，这里提示并直接以"定制面试"模式呈现
+  fetch('/api/voice/custom').then(function(r){return r.json();}).then(function(data){
+    if(data&&data.ready){
+      setMode('定制面试');
+      var hint=tx.querySelector('.bubble.hint');
+      if(hint){
+        var title=data.job_title||'自定义岗位';
+        hint.textContent='已为你准备好「'+title+'」定制面试，接通后小P会直接开始。';
+      }
+    }
+  }).catch(function(){});
+}
 
 function ensureAudio(){
   if(!V.audioCtx){
@@ -196,7 +174,12 @@ function resumeRec(){
   V.recPaused=false;
   setTimeout(function(){
     if(V.active&&!V.speaking&&!V.recPaused&&!V.rec)startRec();
-  },500);
+  },400);
+}
+function ensureRecListening(){
+  // 识别暂停则恢复；从未启动则直接启动（开场白播完后才开始聆听）
+  if(V.recPaused){resumeRec();}
+  else if(!V.rec){startRec();}
 }
 function startRec(){
   var R=w.SpeechRecognition||w.webkitSpeechRecognition;
@@ -211,8 +194,10 @@ function startRec(){
       var r=e.results[i];
       if(r.isFinal)finalText+=r[0].transcript;else interim+=r[0].transcript;
     }
+    // 播报期间识别是暂停的（防止把小P 的话当成你的输入造成重复），
+    // 因此这里的 finalText 一定是用户本人说的话
     if(finalText)sendText(finalText);
-    if((interim||finalText)&&V.active)setStatus('聆听中… '+(interim||finalText));
+    if((interim||finalText)&&V.active&&!V.speaking)setStatus('聆听中… '+(interim||finalText));
   };
   rec.onend=function(){if(V.active&&!V.recPaused){try{rec.start();}catch(e){}}};
   rec.onerror=function(ev){if(ev.error!=='no-speech')setStatus('语音识别错误: '+ev.error);};
@@ -226,6 +211,10 @@ function sendText(t){
     // 防抖：同一句最终识别结果 2 秒内不重复发送，避免连续打断自己刚触发的回复
     if(V.lastSendText===t&&now-V.lastSend<2000)return;
     V.lastSend=now;V.lastSendText=t;
+    // 用户开口说话 → 立即停掉上一轮未播完的音频并复位状态，
+    // 否则新旧回复的 sid 会冲突、回声基准不重置，导致新回复被误打断
+    stopAudio();
+    V.speaking=false;
     V.replyEnded=false;V.buf='';V.liveBubble=null;
     addBubble('user',t);
     if(/(开始面试|模拟面试)/.test(t))setMode('模拟面试');
@@ -245,10 +234,11 @@ function onAudioStart(sid,text){
   V.fallbackBySid[sid]=text||'';
   if(V.nextPlaySid===0)V.nextPlaySid=sid;
   if(!V.speaking){
-    pauseRec();V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
-    // 新一轮播报：等声音真正开始播放时再校准（大音频单元解码/调度需要时间，
-    // 若在 audio_start 就校准，静音窗口会被记成回声基准，声音一响就误判打断）
-    V.calPending=true;
+    // 播报期间暂停识别，避免把小P 的播报回声转成用户输入（防重复循环）；
+    // 打断交给音量检测（VAD），触发后立即恢复识别接收你的回答
+    pauseRec();
+    V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
+    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;
   }
 }
 function onAudioFrame(sid,b64){
@@ -288,11 +278,6 @@ function playBuffer(buf){
   var now=V.audioCtx.currentTime;
   var t=Math.max(now+0.02,V.playTime); // 紧接上一段结束时间，零间隙
   src.start(t);
-  if(V.calPending){
-    V.calPending=false;
-    // 从实际出声这一刻开始校准回声基准（解码/调度延迟不会再污染基准）
-    V.echoRef=0;V.echoTicks=0;V.quietTicks=0;V.vadHits=0;
-  }
   V.activeSources.push(src); // 记录正在/将要播放的源，挂断时可强制停止
   V.playTime=t+buf.duration;
   V.pendingSources++;
@@ -308,7 +293,7 @@ function audioDone(){
   if(V.pendingSources>0||V.fallbackActive>0)return; // WebAudio 块与本地降级语音都播完才算结束
   V.speaking=false;
   setSpeakingUI(false);
-  if(V.replyEnded&&V.active){setStatus('聆听中…');resumeRec();}
+  if(V.replyEnded&&V.active){setStatus('聆听中…');ensureRecListening();}
 }
 function stopAudio(){
   V.playingAudio=false;V.suppressAudio=true;
@@ -328,7 +313,7 @@ function bargeIn(){
   setSpeakingUI(false);
   if(V.ws&&V.ws.readyState===1){V.ws.send(JSON.stringify({type:'stop'}));}
   setStatus('已打断，请继续');
-  resumeRec();
+  ensureRecListening(); // 立即恢复识别，接收你接下来的回答
 }
 function initVAD(){
   if(V.vadOn)return;
@@ -347,30 +332,22 @@ function initVAD(){
   }catch(e){}
 }
 function vadLoop(){
-  if(!V.active){V.vadHits=0;setTimeout(vadLoop,200);return;}
+  if(!V.active){V.vadHits=0;V.quietTicks=0;setTimeout(vadLoop,200);return;}
   if(V.analyser&&V.vadData){
     V.analyser.getByteTimeDomainData(V.vadData);
     var sum=0;
     for(var i=0;i<V.vadData.length;i++){var v=(V.vadData[i]-128)/128;sum+=v*v;}
     var rms=Math.sqrt(sum/V.vadData.length);
     if(V.speaking){
-      V.echoTicks++;
-      if(V.echoTicks*60<VAD_CALIB_MS){
-        // 校准窗口：取播报期间麦克风 RMS 最大值作为回声/噪声基准，
-        // 避免"基准跟着播报音量涨，人声反而追不上"导致无法打断
-        if(rms>V.echoRef)V.echoRef=rms;
+      // 固定阈值（回声消除后麦克风残留很低）：先安静片刻再武装，然后连续超阈值即打断
+      if(!V.bargeArmed){
+        if(rms<=VAD_THRESHOLD){V.quietTicks++;}else{V.quietTicks=0;}
+        if(V.quietTicks>=VAD_QUIET_FRAMES)V.bargeArmed=true;
       }else{
-        // 校准完成后基准只允许极缓慢上漂（适应环境噪音变响），
-        // 不追逐人声、也不因句间静音回落，打断阈值保持稳定
-        if(rms>V.echoRef)V.echoRef+=0.005*(rms-V.echoRef);
-        var limit=Math.max(VAD_THRESHOLD,V.echoRef*VAD_ECHO_FACTOR);
-        if(rms<=limit){V.quietTicks++;}else{V.quietTicks=0;}
-        if(V.quietTicks>=VAD_QUIET_FRAMES){
-          if(rms>limit){V.vadHits++;}else{V.vadHits=0;}
-          if(V.vadHits>=VAD_HITS){V.vadHits=0;bargeIn();}
-        }
+        if(rms>VAD_THRESHOLD){V.vadHits++;}else{V.vadHits=0;}
+        if(V.vadHits>=VAD_HITS){V.vadHits=0;bargeIn();}
       }
-    }else{V.vadHits=0;V.quietTicks=0;}
+    }else{V.vadHits=0;V.quietTicks=0;V.bargeArmed=false;}
   }
   setTimeout(vadLoop,60);
 }
@@ -392,21 +369,38 @@ function pickVoice(){
 function speakFallback(text){
   if(!text)return;
   if(!V.speaking){
-    pauseRec();V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
-    // 本地语音立即出声，这里直接开始校准
-    V.calPending=false;V.echoRef=0;V.echoTicks=0;V.quietTicks=0;V.vadHits=0;
+    pauseRec();
+    V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
+    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;
   }
   V.fallbackActive++;
-  var u=new SpeechSynthesisUtterance(text);
-  u.lang='zh-CN';u.rate=0.95;u.pitch=1.1;
-  var voice=pickVoice();if(voice)u.voice=voice;
   function fallbackEnd(){
     V.fallbackActive=Math.max(0,V.fallbackActive-1);
     audioDone();
   }
-  u.onend=fallbackEnd;
-  u.onerror=fallbackEnd;
-  try{w.speechSynthesis.speak(u);}catch(e){}
+  function doSpeak(){
+    var u=new SpeechSynthesisUtterance(text);
+    u.lang='zh-CN';u.rate=0.95;u.pitch=1.1;
+    var voice=pickVoice();if(voice)u.voice=voice;
+    u.onend=fallbackEnd;
+    u.onerror=fallbackEnd;
+    try{w.speechSynthesis.speak(u);}catch(e){fallbackEnd();}
+  }
+  // Chrome 首次调用时音色列表可能还没加载完成，等待 voiceschanged 再播，
+  // 否则可能完全无声；超时 1.5s 兜底直接播。
+  var vs=w.speechSynthesis.getVoices();
+  if((!vs||!vs.length)&&!V.voicesWaiting){
+    V.voicesWaiting=true;
+    var once=function(){
+      V.voicesWaiting=false;
+      w.speechSynthesis.onvoiceschanged=null;
+      doSpeak();
+    };
+    w.speechSynthesis.onvoiceschanged=once;
+    setTimeout(once,1500);
+  }else{
+    doSpeak();
+  }
 }
 
 function connect(){
@@ -423,11 +417,17 @@ function connect(){
   if(V.timerInt)clearInterval(V.timerInt);
   V.timerInt=setInterval(updateTimer,1000);
   updateTimer();
-  ws.onopen=function(){setStatus('通话已接通，请说话');startRec();};
+  // 接通后小P 立即开口，不先进入"聆听"状态；开场白播完才恢复聆听
+  ws.onopen=function(){setStatus('正在接通…');};
   ws.onmessage=function(ev){
     var m;
     try{m=JSON.parse(ev.data);}catch(e){return;}
-    if(m.type==='reply_start'){V.replyEnded=false;V.suppressAudio=false;V.nextPlaySid=m.first_sid||0;}
+    if(m.type==='reply_start'){
+      // 新回复开始：丢弃上一轮未播完/未播放的音频，sid 从头编号，避免串台
+      stopAudio();
+      V.speaking=false;
+      V.replyEnded=false;V.suppressAudio=false;V.nextPlaySid=m.first_sid||0;
+    }
     else if(m.type==='delta'){V.buf+=m.content;updateLive(V.buf);}
     else if(m.type==='audio_start')onAudioStart(m.sid,m.text);
     else if(m.type==='audio')onAudioFrame(m.sid,m.data);
@@ -467,6 +467,7 @@ if(!V.bound){
 }
 render();
 setMode('辅导答疑');
+fetchCustomStatus();
 })();
 </script>
 </body>

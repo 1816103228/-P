@@ -35,8 +35,10 @@ import requests
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
 
 import app.db as db
+import app.voice_store as voice_store
 from app import config, prompts
 from app.agent import llm
 from app.agent.coach import InterviewSession
@@ -101,6 +103,11 @@ async def lifespan(_app: FastAPI):
 
 
 app = FastAPI(title="面试官小P 语音通话服务", lifespan=lifespan)
+app.mount(
+    "/assets",
+    StaticFiles(directory=Path(__file__).resolve().parent / "ui" / "assets"),
+    name="assets",
+)
 
 
 def maybe_switch_to_mock(session: InterviewSession, text: str) -> InterviewSession:
@@ -117,6 +124,16 @@ def maybe_switch_to_mock(session: InterviewSession, text: str) -> InterviewSessi
 @app.get("/health")
 async def health() -> dict:
     return {"status": "ok"}
+
+
+@app.get("/api/voice/custom")
+async def custom_interview_status() -> dict:
+    """语音页查询是否有待执行的定制面试（用于提示与模式徽标）。"""
+    custom = voice_store.load_custom_interview()
+    return {
+        "ready": custom is not None,
+        "job_title": (custom or {}).get("job_title", ""),
+    }
 
 
 @app.get("/", response_class=HTMLResponse)
@@ -400,34 +417,73 @@ async def _produce(ws: WebSocket, session: InterviewSession, text: str) -> None:
             await ws.send_text(json.dumps({"type": "error", "message": str(e)}))
 
 
-async def _produce_greeting(ws: WebSocket) -> None:
+async def _produce_greeting(ws: WebSocket, greeting: str = prompts.VOICE_GREETING) -> None:
     """接通后先播报开场白，像真实通话一样不等用户开口。可被 barge-in 取消。"""
-    sentences, rest = _split_sentences(prompts.VOICE_GREETING)
+    sentences, rest = _split_sentences(greeting)
     if rest.strip():
         sentences.append(rest.strip())
     state = {"sid": 0}
+    tasks: list[asyncio.Task] = []
     try:
         await ws.send_text(json.dumps({"type": "reply_start", "first_sid": 1}))
-        # 文本先逐句展示，音频整段一次合成（句间语气连贯，不机械）
+        # 文本逐句展示，音频逐句并行合成：首句 1-3 秒即可出声，避免接通后长时间沉默
         for s in sentences:
             if not s.strip():
                 continue
             await ws.send_text(json.dumps({"type": "delta", "content": s}, ensure_ascii=False))
-        await _synthesize(ws, state, prompts.VOICE_GREETING)
+            tasks.append(asyncio.create_task(_synthesize(ws, state, s)))
+        if tasks:
+            await asyncio.gather(*tasks)
         await ws.send_text(json.dumps({"type": "done"}))
     except asyncio.CancelledError:
+        for t in tasks:
+            t.cancel()
         logger.info("开场白被用户打断")
         with suppress(Exception):
             await ws.send_text(json.dumps({"type": "cancelled"}))
 
 
+def _build_custom_greeting(custom: dict) -> str:
+    """定制面试接通时的开场白：告知岗位、题数与流程。"""
+    title = (custom.get("job_title") or "").strip() or "自定义岗位"
+    count = len(custom.get("questions") or [])
+    return (
+        f"你好，我是面试官小P。已为你准备好「{title}」的定制面试，共 {count} 道题。"
+        "先做个 1 分钟自我介绍吧，我会由浅入深逐题提问，全程点评，"
+        "全部结束后为你输出评分报告。"
+    )
+
+
+def _clear_custom_when_finished(session: InterviewSession) -> None:
+    """定制面试正常结束后，清除待执行状态，避免下次接通重复同一套题。"""
+    if (
+        getattr(session, "finished", False)
+        and session.mode == "mock"
+        and getattr(session, "custom_questions", None)
+    ):
+        voice_store.clear_custom_interview()
+
+
 @app.websocket("/ws/voice")
 async def voice(ws: WebSocket) -> None:
     await ws.accept()
-    session = InterviewSession("coach")  # 默认辅导答疑；首条说"开始面试"则切换模拟面试
+    custom = voice_store.load_custom_interview()
+    if custom:
+        # 已准备定制面试 → 接通即进入模拟面试，用定制题目
+        session = InterviewSession(
+            "mock",
+            questions=custom["questions"],
+            job_title=custom.get("job_title", ""),
+            jd=custom.get("jd", ""),
+        )
+        greeting = _build_custom_greeting(custom)
+    else:
+        # 默认辅导答疑；首条说"开始面试"则切换模拟面试
+        session = InterviewSession("coach")
+        greeting = prompts.VOICE_GREETING
     generation: asyncio.Task | None = None
     logger.info("语音通话已接通")
-    generation = asyncio.create_task(_produce_greeting(ws))
+    generation = asyncio.create_task(_produce_greeting(ws, greeting))
     try:
         while True:
             raw = await ws.receive_text()
@@ -449,7 +505,10 @@ async def voice(ws: WebSocket) -> None:
             # 用户开口 → 取消上一轮未完成的生成（barge-in）
             if generation is not None and not generation.done():
                 generation.cancel()
-            generation = asyncio.create_task(_produce(ws, session, text))
+            task = asyncio.create_task(_produce(ws, session, text))
+            # 定制面试结束（输出总结报告）后清除待执行状态，避免下次接通重复同一套题
+            task.add_done_callback(lambda _t, s=session: _clear_custom_when_finished(s))
+            generation = task
     except WebSocketDisconnect:
         logger.info("语音通话已断开")
     finally:

@@ -5,7 +5,7 @@ from pathlib import Path
 from unittest import mock
 
 from app import config, db
-from app.agent.coach import InterviewSession, generate_interview_questions
+from app.agent.coach import InterviewSession
 
 FAKE_QUESTION = {
     "id": 1,
@@ -163,18 +163,6 @@ class CoachFlowTests(unittest.TestCase):
             s.handle("我的回答")
             s.handle(LONG_ANSWER)
         self.assertEqual(report_kwargs.get("model"), "deepseek-reasoner")
-
-    def test_generate_interview_questions_parses_list(self):
-        with (
-            mock.patch(
-                "app.agent.coach.llm.chat",
-                return_value="1. 说说 FastAPI 的依赖注入\n2. 如何设计缓存\n3. 项目难点",
-            ),
-            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
-        ):
-            qs = generate_interview_questions("后端工程师", "熟悉 FastAPI")
-        self.assertEqual(qs, ["说说 FastAPI 的依赖注入", "如何设计缓存", "项目难点"])
-
 
 if __name__ == "__main__":
     unittest.main()

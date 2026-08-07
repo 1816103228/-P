@@ -41,6 +41,77 @@ class QuestionBankChecks(unittest.TestCase):
         for r in rows:
             self.assertIn("Redis", r["title"])
 
+    def test_fts_trigram_query_rules(self):
+        """trigram 查询串规则：全部词 ≥3 字符才走 trigram；短词/混合词回退。"""
+        self.assertIsNotNone(db._fts_trigram_query("缓存穿透"))
+        self.assertIsNotNone(db._fts_trigram_query("Redis缓存一致性"))
+        self.assertIsNone(db._fts_trigram_query("缓存"))
+        self.assertIsNone(db._fts_trigram_query("Redis 缓存"))
+        self.assertIsNone(db._fts_trigram_query(""))
+
+    def test_fts_search_trigram_hits_content(self):
+        """trigram 检索能命中题干/答案中的中文组合词（不只标题）。"""
+        rows = db.fts_search("分布式", limit=5)
+        if not rows:
+            self.skipTest("题库无「分布式」相关内容（数据依赖，跳过）")
+        joined = "".join(
+            (r["title"] or "") + (r["content"] or "") + (r["answer"] or "") for r in rows
+        )
+        self.assertIn("分布式", joined)
+
+    def test_fts_search_short_keyword_fallback(self):
+        """2 字符短词不触发 trigram，正常回退 unicode61/LIKE，不抛错。"""
+        rows = db.fts_search("缓存", limit=3)
+        self.assertIsInstance(rows, list)
+
+    def test_browse_questions_searches_content(self):
+        """题库浏览关键词走全文检索：能命中题干/答案中的中文组合词。"""
+        rows = db.browse_questions(keyword="分布式", limit=5)
+        if not rows:
+            self.skipTest("题库无「分布式」相关内容（数据依赖，跳过）")
+        joined = "".join(
+            (r["title"] or "") + (r["content"] or "") + (r["answer"] or "") for r in rows
+        )
+        self.assertIn("分布式", joined)
+
+    def test_browse_questions_with_filters(self):
+        """关键词可与来源/难度过滤叠加，且过滤条件生效。"""
+        rows = db.browse_questions(keyword="Redis", source="leetcode", limit=5)
+        if not rows:
+            self.skipTest("题库无 leetcode 来源的 Redis 题（数据依赖，跳过）")
+        for r in rows:
+            self.assertEqual(r["source"], "leetcode")
+
+    def test_browse_questions_favorite_only(self):
+        """仅看收藏：只返回已收藏题目（用后即清理，不影响真实数据）。"""
+        rows = db.search_questions(limit=3)
+        if not rows:
+            self.skipTest("题库为空（数据依赖，跳过）")
+        fav = rows[0]["id"]
+        db.add_favorite(fav)
+        try:
+            fav_rows = db.browse_questions(favorite_only=True, limit=50)
+            self.assertTrue(any(r["id"] == fav for r in fav_rows))
+            for r in fav_rows:
+                self.assertTrue(db.is_favorite(r["id"]))
+        finally:
+            db.remove_favorite(fav)
+
+    def test_list_tags(self):
+        """标签列表返回（按出现次数降序）。"""
+        tags = db.list_tags()
+        self.assertIsInstance(tags, list)
+        if tags:
+            self.assertGreater(tags[0][1], 0)
+
+    def test_browse_questions_tag_filter(self):
+        """标签筛选生效，且可与其他条件叠加。"""
+        rows = db.browse_questions(tags=["Redis"], limit=5)
+        if not rows:
+            self.skipTest("题库无 Redis 标签题（数据依赖，跳过）")
+        for r in rows:
+            self.assertIn("Redis", r["tags"] or "")
+
     def test_get_question_by_id(self):
         first = db.search_questions(limit=1)[0]
         row = db.get_question_by_id(first["id"])
@@ -131,7 +202,7 @@ class UITest(unittest.TestCase):
             self.assertFalse(s.finished)
 
     def test_bank_dialog_renders(self):
-        """主界面渲染 + 打开题库对话框后出现「出这道题」（题库非空时）。"""
+        """主界面渲染 + 打开题库对话框后出现「加入面试」选择按钮（题库非空时）。"""
         from streamlit.testing.v1 import AppTest
 
         at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
@@ -139,34 +210,30 @@ class UITest(unittest.TestCase):
         self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
         labels = [b.label for b in at.button]
         self.assertIn("开始面试", labels)
-        self.assertIn("浏览题库", labels)
-        next(b for b in at.button if b.label == "浏览题库").click()
+        self.assertTrue(any("浏览题库" in label for label in labels), "题库入口应在侧边栏")
+        next(b for b in at.button if "浏览题库" in b.label).click()
         at.run()
         self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
-        if not any("qb_ask_" in (b.key or "") for b in at.button):
-            self.skipTest("题库为空，无「出这道题」按钮")
+        if not any("qb_add_" in (b.key or "") for b in at.button):
+            self.skipTest("题库为空，无「加入面试」按钮")
 
     def test_ask_question_from_bank_switches_to_mock_mode(self):
-        """辅导答疑模式下打开题库并点「出这道题」：界面不崩溃。
+        """打开题库并点「加入面试」：界面不崩溃。
 
         AppTest 对 st.dialog 内按钮点击支持有限（点击不会触发处理器），
-        「出这道题」的模式切换逻辑已在 QuestionBankChecks
-        test_ask_question_by_id_switches_to_mock 中以状态机层面覆盖。
+        选多题 → 综合面试的会话构建逻辑由 test_coach 定制题流程覆盖。
         """
-        from app.agent.coach import InterviewSession
         from streamlit.testing.v1 import AppTest
 
         at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
-        at.session_state["session"] = InterviewSession("coach")  # 预设辅导答疑会话
         at.run()
-        next(b for b in at.button if b.label == "浏览题库").click()
+        next(b for b in at.button if "浏览题库" in b.label).click()
         at.run()
-        ask_buttons = [b for b in at.button if "qb_ask_" in (b.key or "")]
-        if not ask_buttons:
-            self.skipTest("题库为空，无「出这道题」按钮")
-        with mock.patch("app.agent.coach.llm.chat", return_value="好的，请听题"):
-            ask_buttons[0].click()
-            at.run()
+        add_buttons = [b for b in at.button if "qb_add_" in (b.key or "")]
+        if not add_buttons:
+            self.skipTest("题库为空，无「加入面试」按钮")
+        add_buttons[0].click()
+        at.run()
         self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
 
 

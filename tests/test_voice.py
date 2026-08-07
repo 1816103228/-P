@@ -383,6 +383,60 @@ class VoiceServerTests(unittest.TestCase):
         self.assertEqual(called, [], "缺少 Key 时不应发起请求")
         self.assertEqual([m["type"] for m in ws.msgs], ["audio_start", "tts_error"])
 
+    @mock.patch(
+        "app.voice_server.voice_store.load_custom_interview",
+        return_value={
+            "job_title": "Python 后端工程师",
+            "jd": "熟悉 Django / Redis",
+            "questions": ["定制题一：解释 GIL", "定制题二：缓存设计"],
+        },
+    )
+    @mock.patch("app.agent.coach.db.fts_search", return_value=[])
+    def test_custom_interview_voice_flow(self, mock_fts, mock_load):
+        """已准备定制面试时接通：播报定制开场白，首句回答后直接出定制题。"""
+        seen: dict[str, str] = {}
+
+        def fake_stream(messages, **kw):
+            last_user = next(
+                (m["content"] for m in reversed(messages) if m["role"] == "user"), ""
+            )
+            seen["last_user"] = last_user
+            yield "（mock）定制题一：解释 GIL"
+
+        with (
+            mock.patch("app.agent.llm.chat_stream", side_effect=fake_stream),
+            TestClient(app) as client,
+            mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
+            client.websocket_connect("/ws/voice") as ws,
+        ):
+            greeting_deltas, *_ = _recv_until_done(ws)
+            ws.send_text(
+                json.dumps({"type": "text", "content": "我叫张三"}, ensure_ascii=False)
+            )
+            deltas, audio_started, audio_ended, _ = _recv_until_done(ws)
+        greeting_text = "".join(greeting_deltas)
+        self.assertIn("定制面试", greeting_text)
+        self.assertIn("Python 后端工程师", greeting_text)
+        self.assertTrue(audio_started and audio_ended, "定制面试应推送音频")
+        self.assertIn("定制题一", seen.get("last_user", ""), "应使用已保存的定制题目")
+
+    @mock.patch(
+        "app.voice_server.voice_store.load_custom_interview",
+        return_value={"job_title": "后端开发", "questions": ["Q1"]},
+    )
+    def test_custom_status_endpoint(self, mock_load):
+        """语音页通过该接口判断是否已准备定制面试。"""
+        with TestClient(app) as client:
+            resp = client.get("/api/voice/custom")
+        self.assertEqual(resp.status_code, 200)
+        self.assertEqual(resp.json(), {"ready": True, "job_title": "后端开发"})
+
+    @mock.patch("app.voice_server.voice_store.load_custom_interview", return_value=None)
+    def test_custom_status_endpoint_empty(self, mock_load):
+        with TestClient(app) as client:
+            resp = client.get("/api/voice/custom")
+        self.assertEqual(resp.json(), {"ready": False, "job_title": ""})
+
     def test_cosyvoice_request_downloads_url(self):
         """非流式 CosyVoice 响应返回音频 URL，需二次下载后返回字节。"""
 

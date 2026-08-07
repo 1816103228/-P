@@ -84,28 +84,6 @@ def _sanitize_input(text: str) -> str:
     return (text or "").strip()[:MAX_INPUT_CHARS]
 
 
-def generate_interview_questions(job_title: str, jd: str, count: int = 8) -> list[str]:
-    """根据目标岗位与招聘信息（JD）生成一套定制面试题。"""
-    job_title = (job_title or "").strip()
-    jd = (jd or "").strip()
-    prompt = (
-        "你是资深技术面试官，正在为一轮真实的岗位面试出题。\n"
-        f"目标岗位：{job_title or '未指定（按通用后端开发）'}\n"
-        f"招聘信息 / JD：\n{jd or '未提供'}\n\n"
-        f"请针对该岗位生成 {count} 道递进的面试问题："
-        "前 2 道为基础知识，中间考察核心技术栈与项目经验，最后 1-2 道为场景/系统设计题；"
-        "题目要具体、贴近 JD 中提到的技术点。\n"
-        "只输出编号列表，每行一道题，不要任何多余文字、解释或 markdown 符号。"
-    )
-    reply = llm.chat([{"role": "user", "content": prompt}], temperature=0.6, max_tokens=1600)
-    questions: list[str] = []
-    for line in reply.splitlines():
-        line = re.sub(r"^\s*(?:[-*]|\d+[\.、)）])\s*", "", line).strip()
-        if line:
-            questions.append(line)
-    return questions[:count] or [f"请结合你的经历谈谈对{job_title or '该岗位'}的理解"]
-
-
 def _pick_question(
     stage_tags: list[str],
     source: str | None,

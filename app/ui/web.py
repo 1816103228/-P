@@ -7,17 +7,22 @@
     streamlit run app/ui/web.py
 或双击 scripts/start.bat（Windows）/ 运行 scripts/start.sh（macOS / Linux）。
 """
+import base64
 import html
 import logging
 import os
 import threading
 from datetime import datetime
+from pathlib import Path
 
 import streamlit as st
 
 import app.db as db
+import app.importer as importer
+import app.voice_store as voice_store
 from app import config
-from app.agent.coach import InterviewSession, generate_interview_questions
+from app.agent.coach import InterviewSession
+from app.agent.customizer import generate_interview_questions
 from app.agent.llm import is_api_key_configured
 from app.prompts import MOCK_GREETING, PERSONAS
 from app.scheduler import setup_logging, start_scheduler
@@ -26,6 +31,23 @@ from app.ui.components import avatar_svg, render_sidebar
 st.set_page_config(page_title="面试官小P", page_icon="🎤", layout="centered")
 
 _log = logging.getLogger("ui")
+voice_url = f"http://{config.VOICE_HOST}:{config.VOICE_PORT}/"
+
+
+def _avatar_html() -> str:
+    """品牌头部头像：优先使用 AI 生成的真人形象照（小图 base64 内嵌），缺失时回退 SVG。"""
+    p = Path(__file__).resolve().parent / "assets" / "avatar_small.png"
+    if not p.exists():
+        return avatar_svg(46)
+    stamp = (p.stat().st_mtime_ns, p.stat().st_size)
+    return _avatar_data_uri(stamp, str(p))
+
+
+@st.cache_data(show_spinner=False)
+def _avatar_data_uri(stamp: tuple, path: str) -> str:
+    b64 = base64.b64encode(Path(path).read_bytes()).decode("ascii")
+    return f'<img src="data:image/png;base64,{b64}" alt="小P"/>'
+
 
 # ---- 定时爬取 ----
 _scheduler_started = False
@@ -60,21 +82,26 @@ st.markdown(
 [data-testid="stAppViewContainer"], .stApp {
     background: radial-gradient(1100px 560px at 50% -10%, #e9f0ff 0%, #f8fafd 50%, #f2f5fa 100%);
 }
-.block-container { padding: 1rem 1.1rem 7rem !important; max-width: 780px !important; }
+.block-container { padding: 0.6rem 1.1rem 4.5rem !important; max-width: 780px !important; }
 html, body, .stApp, .stMarkdown, .stButton, .stTextInput, .stTextArea, .stSelectbox {
     font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif !important;
 }
-#MainMenu, footer { visibility: hidden; display: none; }
-[data-testid="stToolbar"] { display: none; }
+footer { visibility: hidden; display: none; }
+/* 只隐藏 Deploy 与主菜单，保留工具栏（收起侧边栏后左上角的展开按钮在其中） */
+[data-testid="stAppDeployButton"], [data-testid="stMainMenu"] { display: none !important; }
+/* 头部改为普通文档流，避免悬浮盖住首页顶部内容 */
+[data-testid="stHeader"] { position: relative !important; background: transparent !important; z-index: 1; }
 [data-testid="stSidebar"] { background: rgba(255,255,255,.80); border-right: 1px solid #e7ecf4; }
 [data-testid="stSidebar"] .block-container { padding-top: 1.1rem; }
 [data-testid="stSidebarContent"]::-webkit-scrollbar { width: 0; }
 
 /* ===== 品牌头部 ===== */
 .brand { display: flex; align-items: center; gap: 12px; }
-.brand-avatar { width: 58px; height: 76px; display: flex; align-items: center; justify-content: center;
-    background: linear-gradient(160deg, #ffffff, #edf3fc); border: 1px solid #e2e9f4;
-    border-radius: 16px; box-shadow: 0 4px 14px rgba(31,58,102,.10); }
+.brand-center { justify-content: center; }
+.brand-avatar { width: 56px; height: 56px; flex: 0 0 56px; border-radius: 50%; overflow: hidden;
+    border: 2px solid #fff; box-shadow: 0 4px 14px rgba(31,58,102,.16); }
+.brand-avatar img { width: 100%; height: 100%; object-fit: cover; object-position: center 28%; display: block; }
+.brand-avatar svg { width: 46px; height: 46px; }
 .brand-name { font-size: 19px; font-weight: 700; color: #1e2c46; letter-spacing: .4px; }
 .brand-status { margin-top: 3px; font-size: 12px; color: #3f8f63; display: flex; align-items: center; gap: 6px; }
 .brand-status i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e;
@@ -82,7 +109,7 @@ html, body, .stApp, .stMarkdown, .stButton, .stTextInput, .stTextArea, .stSelect
 @keyframes dp { 0%,100%{opacity:1} 50%{opacity:.35} }
 
 /* 眨眼 */
-.av-eye { animation: bl 4.5s ease-in-out infinite; }
+.av-eye { animation: bl 4.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
 .av-eye.r { animation-delay: .18s; }
 @keyframes bl { 0%,96%,100%{transform:scaleY(1)} 98%{transform:scaleY(.08)} }
 
@@ -114,14 +141,14 @@ button[data-variant="pills"][aria-checked="true"] { background: #4f6ef7 !importa
 [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] { font-size: 15px; line-height: 1.7; }
 
 /* ===== 欢迎区 ===== */
-.hero { text-align: center; margin: 34px 0 22px; }
-.hero-title { font-size: 23px; font-weight: 700; color: #1e2c46; letter-spacing: .5px; }
-.hero-sub { margin-top: 8px; font-size: 13px; color: #7b879c; letter-spacing: .5px; }
-.qcard { background: #fff; border: 1px solid #e7edf6; border-radius: 16px; padding: 20px 12px 14px;
-    text-align: center; box-shadow: 0 2px 10px rgba(20,40,80,.05); margin-bottom: 10px; }
-.qicon { font-size: 30px; line-height: 1; }
-.qtitle { margin-top: 10px; font-size: 15px; font-weight: 700; color: #243352; }
-.qdesc { margin-top: 5px; font-size: 12px; color: #8792a7; }
+.hero { text-align: center; margin: 12px 0 10px; }
+.hero-title { font-size: 21px; font-weight: 700; color: #1e2c46; letter-spacing: .5px; }
+.hero-sub { margin-top: 6px; font-size: 13px; color: #7b879c; letter-spacing: .5px; }
+.qcard { background: #fff; border: 1px solid #e7edf6; border-radius: 16px; padding: 12px 10px 8px;
+    text-align: center; box-shadow: 0 2px 10px rgba(20,40,80,.05); margin-bottom: 6px; }
+.qicon { font-size: 26px; line-height: 1; }
+.qtitle { margin-top: 6px; font-size: 15px; font-weight: 700; color: #243352; }
+.qdesc { margin-top: 4px; font-size: 12px; color: #8792a7; }
 
 /* ===== 侧边栏 ===== */
 .side-title { font-size: 13px; font-weight: 700; color: #56637a; letter-spacing: 1px; margin-bottom: 10px; }
@@ -135,6 +162,8 @@ button[data-variant="pills"][aria-checked="true"] { background: #4f6ef7 !importa
     border-radius: 10px; font-size: 12px; color: #56637a; }
 .rev-score { font-weight: 700; color: #4f6ef7; }
 .rev-meta { color: #8a95aa; }
+.voice-ready { background: linear-gradient(135deg, #eef3ff, #e6edff); border: 1px solid #cdd9f7;
+    border-radius: 12px; padding: 10px 14px; font-size: 13px; color: #33508c; }
 
 /* ===== 输入框 ===== */
 [data-testid="stChatInput"] { border: 1px solid #e2e8f2; border-radius: 14px; background: #fff;
@@ -152,6 +181,26 @@ button[data-variant="pills"][aria-checked="true"] { background: #4f6ef7 !importa
 #vcstatus { position: fixed; bottom: 104px; right: 28px; z-index: 9999; background: #fff; border-radius: 10px;
     padding: 6px 14px; font-size: 13px; color: #333; box-shadow: 0 2px 10px rgba(0,0,0,.12);
     display: none; max-width: 300px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* 选中的标签药丸高亮：填色 + 白字 + 外圈光晕，一眼可见 */
+button[data-variant="pills"][data-selected="true"] {
+    background: #4f6ef7 !important;
+    border-color: #4f6ef7 !important;
+    color: #fff !important;
+    box-shadow: 0 0 0 2px rgba(79,110,247,.35) !important;
+    font-weight: 600 !important;
+}
+button[data-variant="pills"]:hover {
+    border-color: #4f6ef7 !important;
+}
+/* 题库对话框加宽：左侧题目列表 + 右侧"已选题目"面板 */
+[data-testid="stDialog"] {
+    width: min(1600px, 98vw) !important;
+    max-width: none !important;
+}
+/* 对话框内按钮文字不换行（"加入面试"等保持单行平铺） */
+[data-testid="stDialog"] button {
+    white-space: nowrap !important;
+}
 </style>""",
     unsafe_allow_html=True,
 )
@@ -163,6 +212,8 @@ if "history" not in st.session_state:
     st.session_state.history = []
 if "mode" not in st.session_state:
     st.session_state.mode = "模拟面试"
+if "selected_questions" not in st.session_state:
+    st.session_state.selected_questions = []
 
 # 出题/定制面试后的模式同步（必须在 pills 实例化之前应用）
 if "_force_mode" in st.session_state:
@@ -179,11 +230,37 @@ def start_mock():
 
 def switch_coach():
     st.session_state.mode = "辅导答疑"
+    st.session_state.session = InterviewSession("coach")
+    st.session_state.history = [
+        (
+            "assistant",
+            "已切换到 **辅导答疑** 模式：直接输入你的面试问题，"
+            "我会给出标准参考回答、加分点和一道变式题。",
+        )
+    ]
 
 
-def clear_all():
-    st.session_state.session = None
-    st.session_state.history = []
+def _add_selected(qid: int, title: str, difficulty: str, source: str) -> None:
+    """把一道题加入"已选题目"（on_click 回调，渲染前执行，界面即时刷新）。"""
+    if not any(s["id"] == qid for s in st.session_state.selected_questions):
+        st.session_state.selected_questions.append(
+            {"id": qid, "title": title, "difficulty": difficulty, "source": source}
+        )
+
+
+def _remove_selected(qid: int) -> None:
+    """从"已选题目"移除一道题（on_click 回调）。"""
+    st.session_state.selected_questions = [
+        s for s in st.session_state.selected_questions if s["id"] != qid
+    ]
+
+
+def _toggle_favorite(qid: int) -> None:
+    """收藏/取消收藏（on_click 回调）。"""
+    if db.is_favorite(qid):
+        db.remove_favorite(qid)
+    else:
+        db.add_favorite(qid)
 
 
 # ---- 对话框：定制面试 ----
@@ -202,6 +279,9 @@ def custom_interview_dialog():
                 st.error(f"生成失败：{e}")
                 qs = []
         if qs:
+            # 同步保存一份给语音通话：接通电话后直接以语音方式进行这份定制面试
+            voice_store.save_custom_interview(job_title, jd, qs)
+            st.session_state["_custom_voice_ready"] = True
             st.session_state.session = InterviewSession(
                 "mock",
                 questions=qs,
@@ -244,6 +324,36 @@ def question_bank_dialog():
                 st.success("已添加到题库")
                 st.rerun()
 
+    with st.expander("📥 批量导入自定义题（CSV）"):
+        st.caption(
+            "每行一题，至少包含「题干」；可选列：答案、标签（逗号分隔）、难度（简单/中等/困难）、公司。"
+            "支持表头（题目,答案,标签,难度,公司）或无表头按列顺序。"
+        )
+        imp_csv = st.text_area(
+            "粘贴 CSV 内容",
+            key="imp_csv",
+            height=120,
+            placeholder="解释 Python 的 GIL 机制及其影响,全局解释器锁……,Python,简单,通用\nRedis 缓存穿透如何解决？,……,Redis,中等,字节跳动",
+        )
+        imp_file = st.file_uploader("或上传 CSV 文件", type=["csv"], key="imp_file")
+        if st.button("导入", key="imp_btn", type="primary", use_container_width=True):
+            text = ""
+            if imp_csv.strip():
+                text = imp_csv
+            elif imp_file is not None:
+                text = imp_file.getvalue().decode("utf-8-sig", errors="replace")
+            if not text.strip():
+                st.warning("请先粘贴内容或上传 CSV 文件")
+            else:
+                stats = importer.import_questions_csv(text)
+                if stats["rows"]:
+                    msg = f"导入成功 **{stats['new']}** 条"
+                    if stats["skipped"]:
+                        msg += f"，跳过重复 {stats['skipped']} 条"
+                    st.success(msg)
+                else:
+                    st.error("没有可导入的题目，请检查 CSV 格式")
+
     srcs = ["全部"] + [r["source"] for r in db.count_by_source()]
     companies = ["全部"] + db.list_companies()
     c1, c2, c3, c4 = st.columns(4)
@@ -255,56 +365,104 @@ def question_bank_dialog():
         company_filter = st.selectbox("公司", companies, key="qb_company")
     with c4:
         kw = st.text_input("关键词", placeholder="如 Redis / 索引", key="qb_kw")
-    q_rows = db.search_questions(
+    fav_only = st.checkbox("⭐ 仅看收藏", key="qb_fav_only")
+    # 用 pills 代替 multiselect：Streamlit 多选框在弹窗里下拉面板无法收回（已知问题）
+    tag_filter = st.pills(
+        "标签", [t for t, _ in db.list_tags()], selection_mode="multi", key="qb_tags"
+    )
+    if tag_filter:
+        st.caption(f"✅ 已选标签：{'、'.join(tag_filter)}（再次点击可取消）")
+    q_rows = db.browse_questions(
+        keyword=kw or None,
+        tags=tag_filter or None,
         source=None if src_filter == "全部" else src_filter,
         difficulty=None if diff_filter == "全部" else diff_filter,
         company=None if company_filter == "全部" else company_filter,
-        keyword=kw or None,
+        favorite_only=fav_only,
         limit=30,
     )
-    if not q_rows:
-        st.caption("暂无匹配的题目")
-    for r in q_rows:
-        c = st.columns([3, 1, 1], vertical_alignment="center")
-        meta = f"`{r['source']}` · `{r['difficulty'] or '难度未知'}`"
-        if r["company"]:
-            meta += f" · `{r['company']}`"
-        c[0].markdown(f"**{r['title']}**\n\n{meta}")
-        if c[1].button("出这道题", key=f"qb_ask_{r['id']}"):
-            sess = st.session_state.session
-            if sess is None:
-                sess = InterviewSession("mock")
-                st.session_state.session = sess
-            with st.spinner("小P出题中…"):
-                try:
-                    reply = sess.ask_question_by_id(r["id"])
-                except Exception as e:
-                    reply = None
-                    st.error(f"出题失败：{e}")
-            if reply:
-                st.session_state.history.append(("assistant", reply))
-                st.session_state["_force_mode"] = "模拟面试"
-                st.rerun()
-        fav_label = "★ 已藏" if db.is_favorite(r["id"]) else "☆ 收藏"
-        if c[2].button(fav_label, key=f"qb_fav_{r['id']}"):
-            if db.is_favorite(r["id"]):
-                db.remove_favorite(r["id"])
+    sel = st.session_state.selected_questions
+    # 没有已选题目时右侧面板不出现，题目列表占满整行
+    if sel:
+        left, right = st.columns([3, 2])
+    else:
+        left, right = st.container(), None
+    with left:
+        if not q_rows:
+            st.caption("暂无匹配的题目")
+        for r in q_rows:
+            is_sel = any(s["id"] == r["id"] for s in sel)
+            c = st.columns([3, 2, 2], vertical_alignment="center")
+            meta = f"`{r['source']}` · `{r['difficulty'] or '难度未知'}`"
+            if r["company"]:
+                meta += f" · `{r['company']}`"
+            if is_sel:
+                # 已加入的题目高亮：蓝色底色 + 左侧色条 + 按钮变为"已加入"
+                c[0].markdown(
+                    '<div style="background:#eef2ff;border-left:3px solid #4f6ef7;'
+                    'border-radius:8px;padding:6px 10px;">'
+                    f'<span style="font-weight:600;">{html.escape(r["title"] or "")}</span>'
+                    '<div style="color:#4f6ef7;font-size:12px;margin-top:2px;">'
+                    f"✓ 已加入面试 · {html.escape(r['source'])} · "
+                    f"{html.escape(r['difficulty'] or '难度未知')}</div></div>",
+                    unsafe_allow_html=True,
+                )
+                c[1].button(
+                    "✓ 已加入",
+                    key=f"qb_add_{r['id']}",
+                    type="primary",
+                    on_click=_remove_selected,
+                    args=(r["id"],),
+                )
             else:
-                db.add_favorite(r["id"])
-            st.rerun()
+                c[0].markdown(f"**{r['title']}**\n\n{meta}")
+                c[1].button(
+                    "加入面试",
+                    key=f"qb_add_{r['id']}",
+                    on_click=_add_selected,
+                    args=(r["id"], r["title"], r["difficulty"] or "未知", r["source"]),
+                )
+            fav_label = "★ 已收藏" if db.is_favorite(r["id"]) else "☆ 收藏"
+            c[2].button(
+                fav_label, key=f"qb_fav_{r['id']}", on_click=_toggle_favorite, args=(r["id"],)
+            )
+    if right is not None:
+        with right:
+            with st.container(border=True):
+                st.markdown(f"**🎯 已选题目（{len(sel)}）**")
+                for i, s in enumerate(sel, 1):
+                    rc = st.columns([4, 1], vertical_alignment="center")
+                    rc[0].caption(f"{i}. {s['title'][:22]}")
+                    rc[1].button(
+                        "✕", key=f"qb_del_{s['id']}", on_click=_remove_selected, args=(s["id"],)
+                    )
+                if st.button(
+                    f"🚀 开始综合面试（{len(sel)} 题）", type="primary", use_container_width=True
+                ):
+                    titles = [s["title"] for s in sel]
+                    st.session_state.session = InterviewSession(
+                        "mock", questions=titles, job_title="综合练习"
+                    )
+                    st.session_state.history = [
+                        (
+                            "assistant",
+                            f"已为你挑选 **{len(titles)} 道题**进行综合面试，"
+                            "接下来由浅入深逐题提问。先做个 1 分钟自我介绍吧"
+                            "（姓名 / 经验 / 相关项目）😊",
+                        )
+                    ]
+                    st.session_state["_force_mode"] = "模拟面试"
+                    st.session_state.selected_questions = []
+                    st.rerun()
 
 
-# ---- 顶部：品牌 + 模式 + 操作 ----
-h1, h2 = st.columns([1, 1.15], vertical_alignment="center")
-with h1:
-    st.markdown(
-        f'<div class="brand"><div class="brand-avatar">{avatar_svg(46)}</div>'
-        '<div><div class="brand-name">面试官小P</div>'
-        '<div class="brand-status"><i></i>在线</div></div></div>',
-        unsafe_allow_html=True,
-    )
-with h2:
-    st.pills("模式", ["模拟面试", "辅导答疑"], key="mode", label_visibility="collapsed")
+# ---- 顶部：品牌（居中）----
+st.markdown(
+    f'<div class="brand brand-center"><div class="brand-avatar">{_avatar_html()}</div>'
+    '<div><div class="brand-name">面试官小P</div>'
+    '<div class="brand-status"><i></i>在线</div></div></div>',
+    unsafe_allow_html=True,
+)
 
 st.selectbox(
     "面试官风格",
@@ -314,20 +472,27 @@ st.selectbox(
     help="一面随和 · 二面严谨 · 三面沉稳",
 )
 
-a1, a2, a3, a4 = st.columns(4)
-with a1:
-    st.button("开始面试", use_container_width=True, type="primary", on_click=start_mock)
-with a2:
-    if st.button("定制面试", use_container_width=True):
-        custom_interview_dialog()
-with a3:
-    if st.button("浏览题库", use_container_width=True):
-        question_bank_dialog()
-with a4:
-    st.button("清空", use_container_width=True, on_click=clear_all)
+# 生成后刷新页面也保留入口：只要语音服务端还存有待执行的定制面试，就继续展示
+_custom_voice_ready = st.session_state.get("_custom_voice_ready") or (
+    voice_store.load_custom_interview() is not None
+)
+if _custom_voice_ready:
+    b1, b2, b3 = st.columns([4, 2, 1], vertical_alignment="center")
+    with b1:
+        st.markdown(
+            '<div class="voice-ready">📞 定制面试已就绪，接通电话即可开始语音面试</div>',
+            unsafe_allow_html=True,
+        )
+    with b2:
+        st.link_button("开始语音面试", voice_url, use_container_width=True)
+    with b3:
+        if st.button("取消", key="cancel_custom_voice", use_container_width=True):
+            voice_store.clear_custom_interview()
+            st.session_state["_custom_voice_ready"] = False
+            st.rerun()
 
-render_sidebar()
-
+# 侧边栏：题库统计 + 浏览题库入口（与统计卡片整合在一起）
+render_sidebar(on_browse=question_bank_dialog)
 
 # ---- 欢迎区 / 聊天 ----
 def render_welcome():
@@ -339,7 +504,7 @@ def render_welcome():
     cards = [
         ("🎤", "模拟面试", "难度递进 · 逐题点评", "开始面试", start_mock),
         ("💡", "辅导答疑", "标准回答 · 加分点 · 变式题", "开始答疑", switch_coach),
-        ("🎯", "定制面试", "按岗位与 JD 生成专属题", "开始定制", lambda: custom_interview_dialog()),
+        ("🎯", "定制面试", "按岗位与 JD 生成专属题", "开始定制", None),
     ]
     cols = st.columns(3)
     for col, (icon, title, desc, label, action) in zip(cols, cards, strict=False):
@@ -349,8 +514,13 @@ def render_welcome():
                 f'<div class="qtitle">{title}</div><div class="qdesc">{desc}</div></div>',
                 unsafe_allow_html=True,
             )
-            if st.button(label, key=f"card_{title}", use_container_width=True):
-                action()
+            if action:
+                # on_click 回调在渲染前执行，点击稳定生效
+                st.button(
+                    label, key=f"card_{title}", use_container_width=True, on_click=action
+                )
+            elif st.button(label, key=f"card_{title}", use_container_width=True):
+                custom_interview_dialog()
 
 
 if not st.session_state.history:
@@ -406,7 +576,6 @@ if prompt:
 # ---- 语音通话（独立语音通话页，像打电话一样）----
 # 右下角按钮在新标签页打开 FastAPI 托管的语音通话页（http://{host}:{port}/），
 # 不受 Streamlit rerun / iframe 限制，通话过程与文字版完全隔离。
-voice_url = f"http://{config.VOICE_HOST}:{config.VOICE_PORT}/"
 st.markdown(
     f'<a id="vccall" href="{voice_url}" target="_blank" title="打开独立语音通话页">📞</a>',
     unsafe_allow_html=True,

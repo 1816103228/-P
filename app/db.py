@@ -97,6 +97,34 @@ CREATE TRIGGER IF NOT EXISTS questions_au AFTER UPDATE ON questions BEGIN
 END;
 """
 
+#: trigram 全文索引：按 3 字符子串建索引，中文子串/组合词匹配远好于 unicode61 逐字索引。
+#: 要求查询词 ≥3 字符（短词由 _fts_search 回退到 unicode61 / LIKE）。
+FTS_TRIGRAM_SCHEMA = """
+CREATE VIRTUAL TABLE IF NOT EXISTS questions_fts_tr USING fts5(
+    title, content, answer, tags,
+    content='questions',
+    content_rowid='id',
+    tokenize='trigram'
+);
+
+CREATE TRIGGER IF NOT EXISTS questions_tr_ai AFTER INSERT ON questions BEGIN
+    INSERT INTO questions_fts_tr(rowid, title, content, answer, tags)
+    VALUES (new.id, new.title, new.content, new.answer, new.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS questions_tr_ad AFTER DELETE ON questions BEGIN
+    INSERT INTO questions_fts_tr(questions_fts_tr, rowid, title, content, answer, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.answer, old.tags);
+END;
+
+CREATE TRIGGER IF NOT EXISTS questions_tr_au AFTER UPDATE ON questions BEGIN
+    INSERT INTO questions_fts_tr(questions_fts_tr, rowid, title, content, answer, tags)
+    VALUES ('delete', old.id, old.title, old.content, old.answer, old.tags);
+    INSERT INTO questions_fts_tr(rowid, title, content, answer, tags)
+    VALUES (new.id, new.title, new.content, new.answer, new.tags);
+END;
+"""
+
 _FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
 
 
@@ -139,6 +167,14 @@ def _migrate(conn: sqlite3.Connection) -> None:
             conn.execute("ALTER TABLE sessions ADD COLUMN persona TEXT")
         conn.execute("PRAGMA user_version = 3")
         logger.info("数据库迁移至版本 3：新增收藏表、题目公司标签与面试官人格")
+    if version < 4:
+        try:
+            conn.executescript(FTS_TRIGRAM_SCHEMA)
+            conn.execute("INSERT INTO questions_fts_tr(questions_fts_tr) VALUES('rebuild')")
+        except sqlite3.OperationalError as e:
+            logger.warning("FTS5 trigram 索引创建失败（%s），中文子串检索将回退", e)
+        conn.execute("PRAGMA user_version = 4")
+        logger.info("数据库迁移至版本 4：新增 trigram 全文索引（中文子串检索）")
     _sync_fts(conn)
 
 
@@ -152,6 +188,13 @@ def _sync_fts(conn: sqlite3.Connection) -> None:
     if n != f:
         conn.execute("INSERT INTO questions_fts(questions_fts) VALUES('rebuild')")
         logger.info("已重建 FTS 索引（%s -> %s）", f, n)
+    try:
+        t = conn.execute("SELECT COUNT(*) FROM questions_fts_tr").fetchone()[0]
+        if n != t:
+            conn.execute("INSERT INTO questions_fts_tr(questions_fts_tr) VALUES('rebuild')")
+            logger.info("已重建 trigram FTS 索引（%s -> %s）", t, n)
+    except sqlite3.OperationalError:
+        pass
 
 
 def _normalize(text: str) -> str:
@@ -242,6 +285,21 @@ def count_by_source() -> list[sqlite3.Row]:
         ).fetchall()
 
 
+def list_tags() -> list[tuple[str, int]]:
+    """返回全部标签及出现次数（按次数降序，供筛选下拉框使用）。"""
+    counts: dict[str, int] = {}
+    with closing(get_conn()) as conn:
+        rows = conn.execute(
+            "SELECT tags FROM questions WHERE tags IS NOT NULL AND tags != ''"
+        ).fetchall()
+    for r in rows:
+        for t in (r["tags"] or "").split(","):
+            t = t.strip()
+            if t:
+                counts[t] = counts.get(t, 0) + 1
+    return sorted(counts.items(), key=lambda kv: kv[1], reverse=True)
+
+
 def search_questions(
     tags: list[str] | None = None,
     difficulty: str | None = None,
@@ -275,6 +333,83 @@ def search_questions(
     params.append(limit)
     with closing(get_conn()) as conn:
         return conn.execute(sql, params).fetchall()
+
+
+def browse_questions(
+    keyword: str | None = None,
+    tags: list[str] | None = None,
+    source: str | None = None,
+    difficulty: str | None = None,
+    company: str | None = None,
+    favorite_only: bool = False,
+    limit: int = 30,
+) -> list[sqlite3.Row]:
+    """题库浏览检索：关键词走 FTS5（trigram → unicode61），可叠加来源/难度/公司过滤；
+    全部失败时回退 标题/题干/答案/标签 LIKE。"""
+    where: list[str] = []
+    params: list = []
+    if source:
+        where.append("q.source = ?")
+        params.append(source)
+    if difficulty:
+        where.append("q.difficulty = ?")
+        params.append(difficulty)
+    if company:
+        where.append("q.company = ?")
+        params.append(company)
+    if tags:
+        conds = []
+        for t in tags:
+            conds.append("q.tags LIKE ? ESCAPE '\\'")
+            params.append(f"%{_escape_like(t)}%")
+        where.append("(" + " OR ".join(conds) + ")")
+    if favorite_only:
+        where.append("q.id IN (SELECT question_id FROM favorites)")
+    cond = (" AND " + " AND ".join(where)) if where else ""
+    kw = (keyword or "").strip()
+    if not kw:
+        sql = f"SELECT q.* FROM questions q WHERE 1=1{cond} ORDER BY q.fetched_at DESC LIMIT ?"
+        params.append(limit)
+        with closing(get_conn()) as conn:
+            return conn.execute(sql, params).fetchall()
+
+    # 1) trigram 命中（中文子串/组合词，≥3 字符）
+    trig_q = _fts_trigram_query(kw)
+    if trig_q:
+        sql = (
+            "SELECT q.* FROM questions q JOIN questions_fts_tr f ON q.id = f.rowid "
+            f"WHERE questions_fts_tr MATCH ?{cond} ORDER BY bm25(questions_fts_tr) LIMIT ?"
+        )
+        try:
+            with closing(get_conn()) as conn:
+                rows = conn.execute(sql, [trig_q, *params, limit]).fetchall()
+            if rows:
+                return rows
+        except sqlite3.OperationalError:
+            pass
+    # 2) unicode61 命中
+    uq = _fts_query(kw)
+    sql = (
+        "SELECT q.* FROM questions q JOIN questions_fts f ON q.id = f.rowid "
+        f"WHERE questions_fts MATCH ?{cond} ORDER BY bm25(questions_fts) LIMIT ?"
+    )
+    try:
+        with closing(get_conn()) as conn:
+            rows = conn.execute(sql, [uq, *params, limit]).fetchall()
+        if rows:
+            return rows
+    except sqlite3.OperationalError:
+        pass
+    # 3) LIKE 兜底：标题/题干/答案/标签任一包含
+    like = f"%{_escape_like(kw)}%"
+    sql = (
+        "SELECT q.* FROM questions q WHERE "
+        "(q.title LIKE ? ESCAPE '\\' OR q.content LIKE ? ESCAPE '\\' "
+        "OR q.answer LIKE ? ESCAPE '\\' OR q.tags LIKE ? ESCAPE '\\')"
+        f"{cond} ORDER BY q.fetched_at DESC LIMIT ?"
+    )
+    with closing(get_conn()) as conn:
+        return conn.execute(sql, [like, like, like, like, *params, limit]).fetchall()
 
 
 def pick_random_question(
@@ -443,11 +578,38 @@ def _escape_fts(text: str) -> str:
     return text.replace('"', '""')
 
 
+def _fts_trigram_query(keyword: str) -> str | None:
+    """trigram 查询串：要求所有词都 ≥3 字符（trigram 不支持短词），否则返回 None。"""
+    tokens = [t for t in _FTS_TOKEN_RE.findall(keyword) if t.strip()]
+    if not tokens or any(len(t) < 3 for t in tokens):
+        return None
+    return " AND ".join(f'"{_escape_fts(t)}"' for t in tokens)
+
+
+def _fts_trigram_search(keyword: str, limit: int = 5) -> list[sqlite3.Row]:
+    """trigram 索引检索：中文子串/组合词匹配（≥3 字符），按 bm25 排序。"""
+    query = _fts_trigram_query(keyword)
+    if not query:
+        return []
+    sql = """SELECT q.* FROM questions q
+             JOIN questions_fts_tr f ON q.id = f.rowid
+             WHERE questions_fts_tr MATCH ?
+             ORDER BY bm25(questions_fts_tr) LIMIT ?"""
+    try:
+        with closing(get_conn()) as conn:
+            return conn.execute(sql, (query, limit)).fetchall()
+    except sqlite3.OperationalError:
+        return []
+
+
 def fts_search(keyword: str, limit: int = 5) -> list[sqlite3.Row]:
-    """FTS5 全文检索（标题/题干/答案/标签）；FTS 不可用或无命中时回退 LIKE。"""
+    """全文检索：trigram（中文子串，≥3 字）→ unicode61 → LIKE 三级回退。"""
     keyword = (keyword or "").strip()
     if not keyword:
         return []
+    rows = _fts_trigram_search(keyword, limit)
+    if rows:
+        return rows
     query = _fts_query(keyword)
     sql = """SELECT q.* FROM questions q
              JOIN questions_fts f ON q.id = f.rowid
