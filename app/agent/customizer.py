@@ -6,11 +6,17 @@
 import json
 import logging
 import re
+from typing import Callable
 
 import app.db as db
 from app.agent import llm
+from app.crawler import lazy
 
 logger = logging.getLogger("interview_coach.customizer")
+
+#: 题目来源标注（与题目一一对应，供前端展示）
+SOURCE_BANK = "题库"
+SOURCE_AI = "AI生成"
 
 
 def _parse_json_object(reply: str) -> dict | None:
@@ -68,11 +74,18 @@ def extract_tech_stack(job_title: str, jd: str) -> list[str]:
 
 
 def search_bank(keywords: list[str], limit: int = 8) -> list[dict]:
-    """按技术栈关键词检索本地题库，返回去重后的 {title, difficulty} 列表。"""
+    """按技术栈关键词检索本地题库，返回去重后的 {title, difficulty} 列表。
+
+    每个关键词走 db.fts_search（trigram 中文子串 → unicode61 → LIKE 三级回退），
+    比原来的 title LIKE 单路检索命中率高得多。
+    """
     seen: set[str] = set()
     hits: list[dict] = []
     for kw in keywords:
-        for row in db.search_questions(keyword=kw, limit=5):
+        kw = (kw or "").strip()
+        if not kw:
+            continue
+        for row in db.fts_search(kw, limit=5):
             title = str(row["title"]).strip()
             if not title or title in seen:
                 continue
@@ -107,19 +120,49 @@ def _parse_questions(reply: str, count: int) -> list[str] | None:
     return out[:count] or None
 
 
-def generate_interview_questions(job_title: str, jd: str, count: int = 8) -> list[str]:
-    """定制面试 Agent：提取技术栈 → 检索题库 → 生成贴近岗位的定制题。"""
+def generate_interview_questions_with_meta(
+    job_title: str,
+    jd: str,
+    count: int = 8,
+    progress: Callable[[str], None] | None = None,
+) -> tuple[list[str], dict]:
+    """定制面试 Agent：提取技术栈 → 检索题库 →（零命中则懒加载补抓）→ 生成贴近岗位的题。
+
+    返回 (题目列表, 元信息)。元信息含每题来源标注与懒加载详情，供前端展示进度/来源；
+    全程不抛异常（LLM/抓取失败均有兜底）。
+    """
     job_title = (job_title or "").strip()
     jd = (jd or "").strip()
+    if progress:
+        progress("正在识别岗位技术栈…")
     tech = extract_tech_stack(job_title, jd)
+    if progress:
+        progress("正在检索本地题库…")
     bank_hits = search_bank(tech)
+    lazy_info = {"attempted": 0, "new": 0, "detail": ""}
+    if not bank_hits:
+        # 零命中：懒加载按岗位补抓对应分类真题入库，再检索一次
+        if progress:
+            progress("本地题库暂无匹配，正在全力抓取相关真题…")
+        try:
+            lazy_info = lazy.backfill_for_job(job_title, jd, tech, progress=progress)
+        except Exception:
+            logger.exception("懒加载补抓失败，回退 AI 生成")
+        bank_hits = search_bank(tech)
+    if progress:
+        progress("正在生成面试题…")
+
     bank_block = "\n".join(f"- {h['title']}（{h['difficulty']}）" for h in bank_hits)
+    if bank_hits:
+        bank_note = f"本地题库中可参考的真题（可选用或改写，不要照搬编号）：\n{bank_block}"
+    else:
+        bank_note = "本地题库暂无该岗位的真题，请凭专业知识生成贴近该岗位的题目（属于 AI 生成，非真题）。"
     prompt = (
         "你是资深技术面试官，正在为一轮真实的岗位面试出题。\n"
         f"目标岗位：{job_title or '未指定（按通用后端开发）'}\n"
         f"招聘信息 / JD：\n{jd or '未提供'}\n"
         f"识别出的技术栈：{', '.join(tech) or '未识别'}\n"
-        f"本地题库中可参考的真题（可选用或改写，不要照搬编号）：\n{bank_block or '（暂无匹配）'}\n\n"
+        f"{bank_note}\n\n"
         f"请针对该岗位生成 {count} 道递进的面试问题："
         "前 2 道为基础知识，中间考察核心技术栈与项目经验，最后 1-2 道为场景/系统设计题；"
         "题目要具体、贴近 JD 中提到的技术点。\n"
@@ -132,4 +175,29 @@ def generate_interview_questions(job_title: str, jd: str, count: int = 8) -> lis
         response_format={"type": "json_object"},
     )
     questions = _parse_questions(reply, count)
-    return questions or [f"请结合你的经历谈谈对{job_title or '该岗位'}的理解"]
+    if not questions:
+        questions = [f"请结合你的经历谈谈对{job_title or '该岗位'}的理解"]
+
+    # 来源标注：命中过本地真题（含懒加载补抓）→ 题库；全程零命中 → AI 生成
+    source = SOURCE_BANK if bank_hits else SOURCE_AI
+    meta = {
+        "sources": [source] * len(questions),
+        "bank_hits": bank_hits,
+        "lazy": lazy_info,
+        "lazy_fetched": bool(lazy_info.get("new")),
+    }
+    return questions, meta
+
+
+def generate_interview_questions(
+    job_title: str,
+    jd: str,
+    count: int = 8,
+    progress: Callable[[str], None] | None = None,
+) -> list[str]:
+    """兼容入口：只返回题目列表（旧调用方 / 语音链路保持不变）。
+
+    文字版与语音版共用同一套决策：检索 → 零命中懒加载补抓 → 生成。
+    """
+    questions, _ = generate_interview_questions_with_meta(job_title, jd, count, progress)
+    return questions

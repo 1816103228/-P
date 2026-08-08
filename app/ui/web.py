@@ -22,7 +22,7 @@ import app.importer as importer
 import app.voice_store as voice_store
 from app import config
 from app.agent.coach import InterviewSession
-from app.agent.customizer import generate_interview_questions
+from app.agent.customizer import generate_interview_questions_with_meta
 from app.agent.llm import is_api_key_configured
 from app.prompts import MOCK_GREETING, PERSONAS
 from app.scheduler import setup_logging, start_scheduler
@@ -322,13 +322,33 @@ def custom_interview_dialog():
         if not job_title.strip() and not jd.strip():
             st.warning("请填写目标岗位或招聘信息")
             return
-        with st.spinner("正在生成定制面试题…"):
+        meta: dict = {}
+        with st.status("正在准备定制面试…", expanded=False) as status:
+
+            def _progress(msg: str) -> None:
+                # 实时进度：识别技术栈 → 检索 → 全力抓取 → 生成
+                status.update(label=msg, state="running")
+
             try:
-                qs = generate_interview_questions(job_title, jd)
+                qs, meta = generate_interview_questions_with_meta(job_title, jd, progress=_progress)
+                status.update(label="题目已就绪 ✅", state="complete")
             except Exception as e:
+                status.update(label=f"生成失败：{e}", state="error")
                 st.error(f"生成失败：{e}")
                 qs = []
         if qs:
+            # 来源标注说明（题库真题 / AI 生成 / 懒加载补抓）
+            sources = meta.get("sources") or []
+            n_bank = sources.count("题库")
+            n_ai = len(qs) - n_bank
+            note_lines: list[str] = []
+            if meta.get("lazy_fetched"):
+                note_lines.append(f"🔍 {meta.get('lazy', {}).get('detail') or '已补抓相关真题'}")
+            if n_ai and n_ai == len(qs):
+                note_lines.append("⚠️ 本地题库暂无该岗位真题，以下题目为 **AI 生成（非真题）**，仅供参考。")
+            elif n_bank:
+                note_lines.append(f"📚 本批题目已参考本地题库 **{n_bank} 道真题** 生成。")
+            note = "\n".join(note_lines)
             # 同步保存一份给语音通话：接通电话后直接以语音方式进行这份定制面试
             voice_store.save_custom_interview(job_title, jd, qs)
             st.session_state["_custom_voice_ready"] = True
@@ -343,6 +363,7 @@ def custom_interview_dialog():
                 (
                     "assistant",
                     f"已按「{job_title.strip() or '自定义'}」为你生成 **{len(qs)} 道定制题**。\n\n"
+                    f"{note}\n\n"
                     "先做个 1 分钟自我介绍吧（姓名 / 经验 / 相关项目）😊",
                 )
             ]

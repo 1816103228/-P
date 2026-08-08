@@ -68,6 +68,15 @@ CREATE TABLE IF NOT EXISTS favorites (
     question_id INTEGER NOT NULL UNIQUE REFERENCES questions(id),
     created_at  TEXT NOT NULL
 );
+
+-- 懒加载补抓记录：记录某个数据源的某分类是否已按需抓取过（避免重复抓取）
+CREATE TABLE IF NOT EXISTS fetched_categories (
+    source      TEXT NOT NULL,
+    category    TEXT NOT NULL,
+    new_count   INTEGER NOT NULL DEFAULT 0,
+    fetched_at  TEXT NOT NULL,
+    PRIMARY KEY (source, category)
+);
 """
 
 #: FTS5 外部内容表：与 questions 通过 rowid 关联，触发器保持同步
@@ -175,6 +184,20 @@ def _migrate(conn: sqlite3.Connection) -> None:
             logger.warning("FTS5 trigram 索引创建失败（%s），中文子串检索将回退", e)
         conn.execute("PRAGMA user_version = 4")
         logger.info("数据库迁移至版本 4：新增 trigram 全文索引（中文子串检索）")
+    if version < 5:
+        conn.executescript(
+            """
+            CREATE TABLE IF NOT EXISTS fetched_categories (
+                source      TEXT NOT NULL,
+                category    TEXT NOT NULL,
+                new_count   INTEGER NOT NULL DEFAULT 0,
+                fetched_at  TEXT NOT NULL,
+                PRIMARY KEY (source, category)
+            )
+            """
+        )
+        conn.execute("PRAGMA user_version = 5")
+        logger.info("数据库迁移至版本 5：新增懒加载补抓记录表（fetched_categories）")
     _sync_fts(conn)
 
 
@@ -283,6 +306,31 @@ def count_by_source() -> list[sqlite3.Row]:
         return conn.execute(
             "SELECT source, COUNT(*) AS n FROM questions GROUP BY source ORDER BY n DESC"
         ).fetchall()
+
+
+# ------------------------------------------------------------ 懒加载补抓记录
+
+def is_category_fetched(source: str, category: str) -> bool:
+    """该数据源+分类是否已按需补抓过。"""
+    with closing(get_conn()) as conn:
+        row = conn.execute(
+            "SELECT 1 FROM fetched_categories WHERE source = ? AND category = ?",
+            (source, category),
+        ).fetchone()
+    return row is not None
+
+
+def mark_category_fetched(source: str, category: str, new_count: int = 0) -> None:
+    """记录该数据源+分类已完成懒加载补抓（幂等，重复抓取会刷新时间）。"""
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(get_conn()) as conn, conn:
+        conn.execute(
+            """INSERT INTO fetched_categories (source, category, new_count, fetched_at)
+               VALUES (?, ?, ?, ?)
+               ON CONFLICT(source, category)
+               DO UPDATE SET new_count = excluded.new_count, fetched_at = excluded.fetched_at""",
+            (source, category, new_count, now),
+        )
 
 
 def list_tags() -> list[tuple[str, int]]:

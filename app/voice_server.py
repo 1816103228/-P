@@ -34,6 +34,8 @@ from pathlib import Path
 import requests
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
+
+from app.asr_client import DashScopeASR
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -141,8 +143,12 @@ async def voice_page() -> str:
     """独立语音通话页（方案A）：由 FastAPI 直接托管，摆脱 Streamlit iframe/rerun 限制。"""
     # 每次请求实时读取，前端改动即时生效（无需重启语音服务）
     html = (Path(__file__).resolve().parent / "ui" / "voice_page.html").read_text(encoding="utf-8")
-    return html.replace("__VAD_THRESHOLD__", str(config.VOICE_VAD_THRESHOLD)).replace(
-        "__WEB_URL__", config.WEB_URL
+    return (
+        html.replace("__VAD_THRESHOLD__", str(config.VOICE_VAD_THRESHOLD))
+        .replace("__VAD_HITS__", str(config.VOICE_VAD_HITS))
+        .replace("__VAD_QUIET_FRAMES__", str(config.VOICE_VAD_QUIET_FRAMES))
+        .replace("__VAD_NOISE_MARGIN__", str(config.VOICE_VAD_NOISE_MARGIN))
+        .replace("__WEB_URL__", config.WEB_URL)
     )
 
 
@@ -483,6 +489,18 @@ async def voice(ws: WebSocket) -> None:
         session = InterviewSession("coach")
         greeting = prompts.VOICE_GREETING
     generation: asyncio.Task | None = None
+    loop = asyncio.get_running_loop()
+    asr: DashScopeASR | None = None
+
+    async def _on_asr_sentence(text: str) -> None:
+        """ASR 识别出完整句子 → 回传前端（前端按用户输入处理）。"""
+        try:
+            await ws.send_text(
+                json.dumps({"type": "asr_text", "content": text}, ensure_ascii=False)
+            )
+        except Exception:
+            logger.debug("asr_text 发送失败（连接可能已断开）")
+
     logger.info("语音通话已接通")
     generation = asyncio.create_task(_produce_greeting(ws, greeting))
     try:
@@ -496,6 +514,28 @@ async def voice(ws: WebSocket) -> None:
             if mtype == "stop":
                 if generation is not None and not generation.done():
                     generation.cancel()
+                continue
+            if mtype == "asr_start":
+                # 前端告知采集采样率 → 创建 DashScope 流式 ASR
+                if asr is None:
+                    sr = int(msg.get("sample_rate") or config.ASR_SAMPLE_RATE)
+                    asr = DashScopeASR(loop, _on_asr_sentence, sample_rate=sr)
+                    if asr.start():
+                        logger.info("ASR 已启动 (sample_rate=%s)", sr)
+                        await ws.send_text(json.dumps({"type": "asr_ready"}, ensure_ascii=False))
+                    else:
+                        await ws.send_text(
+                            json.dumps({"type": "asr_error", "message": "语音识别启动失败"}, ensure_ascii=False)
+                        )
+                continue
+            if mtype == "audio":
+                # 前端 PCM 音频帧 → ASR 流式识别
+                if asr is not None:
+                    try:
+                        data = base64.b64decode(msg.get("data") or "")
+                        asr.send(data)
+                    except Exception:
+                        logger.exception("audio 帧处理失败")
                 continue
             if mtype != "text":
                 continue
@@ -515,6 +555,8 @@ async def voice(ws: WebSocket) -> None:
     finally:
         if generation is not None and not generation.done():
             generation.cancel()
+        if asr is not None:
+            asr.stop()
 
 
 def main() -> None:

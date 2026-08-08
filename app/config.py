@@ -35,19 +35,30 @@ CRAWL_REQUEST_DELAY = float(os.getenv("CRAWL_REQUEST_DELAY", "0.3"))
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "3"))
 LEETCODE_CACHE_HOURS = int(os.getenv("LEETCODE_CACHE_HOURS", "72"))
 
+# ---- 懒加载补抓（定制面试零命中时按需抓取）----
+LAZY_CRAWL_PAGES = int(os.getenv("LAZY_CRAWL_PAGES", "3"))  # 每分类抓列表页数
+LAZY_CRAWL_LIMIT = int(os.getenv("LAZY_CRAWL_LIMIT", "40"))  # 每分类最多入库条数
+LAZY_CRAWL_TIMEOUT = float(os.getenv("LAZY_CRAWL_TIMEOUT", "30"))  # 补抓总超时（秒）
+
 # ---- 语音通话服务 ----
 VOICE_HOST = os.getenv("VOICE_HOST", "127.0.0.1").strip()
 VOICE_PORT = int(os.getenv("VOICE_PORT", "8765"))
 VOICE_NAME = os.getenv("VOICE_NAME", "zh-CN-XiaoxiaoNeural").strip()
 VOICE_RATE = os.getenv("VOICE_RATE", "+0%").strip()
 VOICE_PITCH = os.getenv("VOICE_PITCH", "+2Hz").strip()
-VOICE_VAD_THRESHOLD = float(os.getenv("VOICE_VAD_THRESHOLD", "0.045"))
+VOICE_VAD_THRESHOLD = float(os.getenv("VOICE_VAD_THRESHOLD", "0.08"))  # 打断音量阈值（越高越不易误触发）
+VOICE_VAD_HITS = int(os.getenv("VOICE_VAD_HITS", "5"))  # 连续超阈值帧数（每帧约60ms），需持续说话才打断
+VOICE_VAD_QUIET_FRAMES = int(os.getenv("VOICE_VAD_QUIET_FRAMES", "3"))  # 武装前需安静的帧数（防自己话尾误打断）
+VOICE_VAD_NOISE_MARGIN = float(os.getenv("VOICE_VAD_NOISE_MARGIN", "1.6"))  # 自适应阈值 = 环境底噪 × 系数
 VOICE_TTS = (
     os.getenv("VOICE_TTS", "edge").strip().lower()
 )  # edge=微软edge-tts在线神经语音 / cosyvoice=阿里云百炼CosyVoice / local=浏览器本地语音
 
 # ---- 阿里云百炼 CosyVoice（VOICE_TTS=cosyvoice 时使用）----
 DASHSCOPE_API_KEY = os.getenv("DASHSCOPE_API_KEY", "").strip()
+# ---- 阿里云百炼 实时语音识别（Paraformer，替代 Chrome 内置 SpeechRecognition）----
+ASR_MODEL = os.getenv("ASR_MODEL", "paraformer-realtime-v2").strip()
+ASR_SAMPLE_RATE = int(os.getenv("ASR_SAMPLE_RATE", "16000"))
 COSYVOICE_MODEL = os.getenv("COSYVOICE_MODEL", "cosyvoice-v2").strip()
 # 龙小淳 v2：温暖甜美的女声；其他可用音色见百炼文档音色列表
 COSYVOICE_VOICE = os.getenv("COSYVOICE_VOICE", "longxiaochun_v2").strip()

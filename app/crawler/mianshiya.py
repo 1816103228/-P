@@ -85,6 +85,28 @@ class MianShiYaAdapter(SourceAdapter):
             out = out[:limit]
         return out
 
+    def fetch_category(
+        self,
+        category: str,
+        pages: int | None = None,
+        limit: int | None = None,
+        with_details: bool = False,
+    ) -> list[dict]:
+        """按需（懒加载）抓取单个分类的题：只抓列表页，秒级返回。
+
+        默认不抓详情页（with_details=False），答案留待定时全量抓取补全；
+        页面数默认取 config.CRAWL_PAGES_PER_CATEGORY，懒加载调用方可传小值加速。
+        """
+        pages = pages if pages is not None else config.CRAWL_PAGES_PER_CATEGORY
+        rows = self._dedupe_rows(self._fetch_category(category, pages))
+        if with_details:
+            rows = self._enrich_details(rows)
+        if limit:
+            rows = rows[:limit]
+        for r in rows:
+            r.setdefault("source", self.name)
+        return rows
+
     @staticmethod
     def _dedupe_rows(rows: list[dict]) -> list[dict]:
         """同一道题可能同时出现在多个分类/热门里，按 source_id 去重。"""

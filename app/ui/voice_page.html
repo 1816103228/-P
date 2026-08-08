@@ -84,6 +84,9 @@ body {
   <button id="callBtn" title="接通 / 挂断">📞<span class="lbl">接通</span></button>
 </div>
 
+<!-- 调试面板：URL 加 ?debug=1 显示识别器实时状态与日志 -->
+<div id="dbg" style="display:none;position:fixed;left:8px;bottom:8px;z-index:999;max-width:48vw;font:11px/1.5 ui-monospace,Consolas,monospace;color:#9fe8b2;background:rgba(10,16,34,.94);padding:6px 8px;border-radius:6px;white-space:pre-wrap;"></div>
+
 <script>
 (function(){
 var d=document, w=window;
@@ -93,20 +96,35 @@ if(!btn||!st||!tx)return;
 
 var V=w.__voiceState;
 if(!V){V=w.__voiceState={
-  active:false,ws:null,rec:null,buf:'',speaking:false,bound:false,recPaused:false,
+  active:false,ws:null,buf:'',speaking:false,bound:false,
   audioCtx:null,playingAudio:false,replyEnded:false,suppressAudio:false,
   sidData:{},playQueue:[],activeSources:[],nextPlaySid:0,playTime:0,pendingSources:0,
   fallbackBySid:{},liveBubble:null,
   timerStart:0,timerInt:null,fallbackActive:0,
   lastSend:0,lastSendText:'',
-  vadOn:false,analyser:null,vadData:null,vadHits:0,quietTicks:0,bargeArmed:false
+  mic:null,micProc:null,micPaused:true,asrReady:false,
+  vadOn:false,analyser:null,vadData:null,vadHits:0,quietTicks:0,bargeArmed:false,noiseFloor:0,bargeWait:0
 };}
 
-// 打断用固定音量阈值（回声由 getUserMedia 的回声消除处理，麦克风残留远低于人声）
-var VAD_THRESHOLD=__VAD_THRESHOLD__;
-var VAD_HITS=3;          // 连续超阈值约 180ms 才打断，过滤瞬时噪声
-var VAD_QUIET_FRAMES=2;  // 播报开始后需先安静片刻再武装，防止自己话尾误打断
+// 打断用音量阈值（回声由 getUserMedia 的回声消除处理，麦克风残留远低于人声）。
+// 阈值/帧数均可由后端 .env 配置；另加自适应底噪：环境吵时自动抬高有效阈值，防误打断。
+var VAD_THRESHOLD=parseFloat(__VAD_THRESHOLD__);
+var VAD_HITS=parseInt(__VAD_HITS__,10);            // 连续超阈值帧数（约 60ms/帧），需持续说话才打断
+var VAD_QUIET_FRAMES=parseInt(__VAD_QUIET_FRAMES__,10); // 播报开始后需先安静片刻再武装，防自己话尾误打断
+var VAD_NOISE_MARGIN=parseFloat(__VAD_NOISE_MARGIN__);  // 有效阈值 = max(固定阈值, 环境底噪×系数)
 
+// ---- 调试面板（?debug=1 启用）：实时显示识别器状态与事件日志 ----
+var _dbgOn=(w.location.search.indexOf('debug')>=0);
+var dbgEl=null,_dbgLog='';
+function _dbg(msg){
+  if(!_dbgOn)return;
+  if(!dbgEl){dbgEl=d.getElementById('dbg');if(dbgEl)dbgEl.style.display='block';}
+  if(!dbgEl)return;
+  var t=new Date(),ts=('0'+t.getHours()).slice(-2)+':'+('0'+t.getMinutes()).slice(-2)+':'+('0'+t.getSeconds()).slice(-2);
+  _dbgLog=(_dbgLog+'\n'+ts+' '+msg).split('\n').slice(-16).join('\n');
+  var head='speaking:'+(V.speaking?'Y':'N')+' mic:'+(V.mic?'Y':'N')+' asr:'+(V.asrReady?'Y':'N')+' pause:'+(V.micPaused?'Y':'N');
+  dbgEl.textContent=head+'\n'+_dbgLog;
+}
 function setStatus(t,busy){
   st.textContent=t;
   st.classList.toggle('busy',!!busy);
@@ -164,63 +182,85 @@ function ensureAudio(){
     try{var AC=w.AudioContext||w.webkitAudioContext;V.audioCtx=new AC();}catch(e){}
   }
 }
-function pauseRec(){
-  if(V.recPaused)return;
-  V.recPaused=true;
-  if(V.rec){try{V.rec.onend=null;V.rec.stop();}catch(e){}V.rec=null;}
+function bytesToB64(bytes){
+  var bin='',chunk=0x8000;
+  for(var i=0;i<bytes.length;i+=chunk){bin+=String.fromCharCode.apply(null,bytes.subarray(i,i+chunk));}
+  return btoa(bin);
 }
-function resumeRec(){
-  if(!V.recPaused)return;
-  V.recPaused=false;
-  setTimeout(function(){
-    if(V.active&&!V.speaking&&!V.recPaused&&!V.rec)startRec();
-  },400);
-}
-function ensureRecListening(){
-  // 识别暂停则恢复；从未启动则直接启动（开场白播完后才开始聆听）
-  if(V.recPaused){resumeRec();}
-  else if(!V.rec){startRec();}
-}
-function startRec(){
-  var R=w.SpeechRecognition||w.webkitSpeechRecognition;
-  if(!R){setStatus('请用 Chrome / Edge 浏览器');return;}
-  if(V.rec)return;
-  var rec=new R();
-  rec.lang='zh-CN';rec.continuous=true;rec.interimResults=true;
-  rec.onstart=function(){if(V.active)setStatus('聆听中…');};
-  rec.onresult=function(e){
-    var interim='',finalText='';
-    for(var i=0;i<e.results.length;i++){
-      var r=e.results[i];
-      if(r.isFinal)finalText+=r[0].transcript;else interim+=r[0].transcript;
+// 麦克风采集 → 16bit PCM → 经 WebSocket 送后端 DashScope ASR 流式识别
+function startAudioStream(){
+  if(V.mic)return;
+  if(!w.navigator.mediaDevices||!w.navigator.mediaDevices.getUserMedia){setStatus('请用 Chrome / Edge 浏览器');return;}
+  w.navigator.mediaDevices.getUserMedia({audio:{echoCancellation:true,noiseSuppression:true,autoGainControl:true}})
+  .then(function(stream){
+    var AC=w.AudioContext||w.webkitAudioContext;
+    // 复用 connect 里创建的 ctx（用户手势内创建，避免 autoplay 挂起）；采样率以实际为准
+    var ctx=V.audioCtx||new AC();
+    if(ctx.state==='suspended'){try{ctx.resume();}catch(e){}}
+    V.audioCtx=ctx;
+    var src=ctx.createMediaStreamSource(stream);
+    var proc=ctx.createScriptProcessor(4096,1,1);
+    proc.onaudioprocess=function(e){
+      if(!V.ws||V.ws.readyState!==1||!V.asrReady)return;
+      var data=e.inputBuffer.getChannelData(0);
+      var pcm=new Int16Array(data.length);
+      for(var i=0;i<data.length;i++){
+        var s=Math.max(-1,Math.min(1,data[i]));
+        pcm[i]=(s<0?s*0x8000:s*0x7FFF)|0;
+      }
+      V.ws.send(JSON.stringify({type:'audio',data:bytesToB64(new Uint8Array(pcm.buffer))}));
+    };
+    var g=ctx.createGain();g.gain.value=0; // 静音输出，避免把采集声音播出来
+    proc.connect(g);g.connect(ctx.destination);
+    V.mic=stream;V.micProc=proc;
+    if(V.ws&&V.ws.readyState===1){
+      V.ws.send(JSON.stringify({type:'asr_start',sample_rate:ctx.sampleRate}));
+      _dbg('音频采集启动 sampleRate='+ctx.sampleRate);
     }
-    // 播报期间识别是暂停的（防止把小P 的话当成你的输入造成重复），
-    // 因此这里的 finalText 一定是用户本人说的话
-    if(finalText)sendText(finalText);
-    if((interim||finalText)&&V.active&&!V.speaking)setStatus('聆听中… '+(interim||finalText));
-  };
-  rec.onend=function(){if(V.active&&!V.recPaused){try{rec.start();}catch(e){}}};
-  rec.onerror=function(ev){if(ev.error!=='no-speech')setStatus('语音识别错误: '+ev.error);};
-  V.rec=rec;
-  try{rec.start();}catch(e){}
+  }).catch(function(e){setStatus('麦克风不可用: '+(e&&e.name||e));});
 }
-function stopRec(){V.recPaused=false;if(V.rec){try{V.rec.onend=null;V.rec.stop();}catch(e){}V.rec=null;}}
+function stopAudioStream(){
+  if(V.micProc){try{V.micProc.disconnect();}catch(e){}V.micProc=null;}
+  if(V.mic){try{V.mic.getTracks().forEach(function(t){t.stop();});}catch(e){}V.mic=null;}
+  V.micPaused=true;V.asrReady=false;
+}
 function sendText(t){
   if(V.ws&&V.ws.readyState===1){
     var now=Date.now();
     // 防抖：同一句最终识别结果 2 秒内不重复发送，避免连续打断自己刚触发的回复
     if(V.lastSendText===t&&now-V.lastSend<2000)return;
     V.lastSend=now;V.lastSendText=t;
+    _dbg('sendText: '+t.slice(0,20));
     // 用户开口说话 → 立即停掉上一轮未播完的音频并复位状态，
     // 否则新旧回复的 sid 会冲突、回声基准不重置，导致新回复被误打断
     stopAudio();
     V.speaking=false;
-    V.replyEnded=false;V.buf='';V.liveBubble=null;
+    V.replyEnded=false;V.buf='';V.liveBubble=null;V.speakingText='';
     addBubble('user',t);
     if(/(开始面试|模拟面试)/.test(t))setMode('模拟面试');
     V.ws.send(JSON.stringify({type:'text',content:t}));
     setStatus('小P思考中…',true);
   }
+}
+// ASR 识别文本处理：播报中先做内容级回声过滤，非回声 → 打断小P并发送
+function handleAsrText(text){
+  text=(text||'').trim();
+  if(!text)return;
+  if(V.speaking){
+    if(_isEchoLike(text)){_dbg('回声忽略: '+text.slice(0,20));return;}
+    _dbg('插话识别: '+text.slice(0,20));
+  }
+  sendText(text); // sendText 内部 stopAudio 打断小P
+}
+// 回声判断：识别文本与正在播报内容高度一致 → 小P 的播报回声
+function _isEchoLike(text){
+  var t=(text||'').replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g,'');
+  var b=(V.speakingText||'').replace(/[^\u4e00-\u9fa5a-zA-Z0-9]/g,'');
+  if(!t||!b)return false;
+  if(t.length>=8&&b.indexOf(t)>=0)return true; // 整句回声
+  var hit=0;
+  for(var i=0;i<t.length;i++){if(b.indexOf(t[i])>=0)hit++;}
+  return t.length>=6&&(hit/t.length)>=0.7; // 高度重叠
 }
 
 /* ---- 音频：按 sid 缓冲、按序零间隙播放（消除句间停顿）---- */
@@ -234,11 +274,14 @@ function onAudioStart(sid,text){
   V.fallbackBySid[sid]=text||'';
   if(V.nextPlaySid===0)V.nextPlaySid=sid;
   if(!V.speaking){
-    // 播报期间暂停识别，避免把小P 的播报回声转成用户输入（防重复循环）；
-    // 打断交给音量检测（VAD），触发后立即恢复识别接收你的回答
-    pauseRec();
+    _dbg('播报开始: '+(text||'').slice(0,22));
+    // 播报中也持续发送音频给 ASR：用户开口会被识别为非回声内容 → 立即打断；
+    // 小P 自己的回声被识别到时，由 _isEchoLike 内容过滤忽略
     V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
-    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;
+    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;V.noiseFloor=0;V.bargeWait=0;
+  }else{
+    // 同回复后续句：重置 VAD 基线，避免回声重新建立被误判为用户开口
+    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;V.noiseFloor=0;V.bargeWait=0;
   }
 }
 function onAudioFrame(sid,b64){
@@ -291,9 +334,11 @@ function playBuffer(buf){
 }
 function audioDone(){
   if(V.pendingSources>0||V.fallbackActive>0)return; // WebAudio 块与本地降级语音都播完才算结束
+  _dbg('播报结束');
+  // 播报结束 → 恢复聆听状态
   V.speaking=false;
   setSpeakingUI(false);
-  if(V.replyEnded&&V.active){setStatus('聆听中…');ensureRecListening();}
+  if(V.replyEnded&&V.active){setStatus('聆听中…');}
 }
 function stopAudio(){
   V.playingAudio=false;V.suppressAudio=true;
@@ -308,12 +353,12 @@ function stopAudio(){
 /* ---- 打断：VAD + 自适应回声基准（不被自己的播报误触发）---- */
 function bargeIn(){
   if(!V.speaking)return;
+  _dbg('VAD打断触发');
   stopAudio();
-  V.speaking=false;V.buf='';V.replyEnded=false;V.liveBubble=null;
+  V.speaking=false;V.buf='';V.replyEnded=false;V.liveBubble=null;V.speakingText='';
   setSpeakingUI(false);
   if(V.ws&&V.ws.readyState===1){V.ws.send(JSON.stringify({type:'stop'}));}
   setStatus('已打断，请继续');
-  ensureRecListening(); // 立即恢复识别，接收你接下来的回答
 }
 function initVAD(){
   if(V.vadOn)return;
@@ -339,13 +384,31 @@ function vadLoop(){
     for(var i=0;i<V.vadData.length;i++){var v=(V.vadData[i]-128)/128;sum+=v*v;}
     var rms=Math.sqrt(sum/V.vadData.length);
     if(V.speaking){
-      // 固定阈值（回声消除后麦克风残留很低）：先安静片刻再武装，然后连续超阈值即打断
       if(!V.bargeArmed){
-        if(rms<=VAD_THRESHOLD){V.quietTicks++;}else{V.quietTicks=0;}
-        if(V.quietTicks>=VAD_QUIET_FRAMES)V.bargeArmed=true;
+        V.bargeWait++;
+        // 宽松"安静"判定（≤2×阈值）：安静帧更新底噪并累积；否则清零
+        if(rms<=VAD_THRESHOLD*2){
+          if(V.noiseFloor<=0){V.noiseFloor=rms;}else{V.noiseFloor=V.noiseFloor*0.9+rms*0.1;}
+          V.quietTicks++;
+        }else{
+          V.quietTicks=0;
+        }
+        // 安静片刻即武装；外放回声导致一直不安静时，约0.9s 也强制武装
+        if(V.quietTicks>=VAD_QUIET_FRAMES||V.bargeWait>=15){
+          if(V.noiseFloor<=0)V.noiseFloor=rms*0.8; // 以当前水平估底噪，避免持续噪音误触发
+          V.bargeArmed=true;
+        }
       }else{
-        if(rms>VAD_THRESHOLD){V.vadHits++;}else{V.vadHits=0;}
-        if(V.vadHits>=VAD_HITS){V.vadHits=0;bargeIn();}
+        // 武装后：底噪只在“未超阈值”的帧更新（吸收环境噪音，不被用户说话拉高），
+        // 用户开口能量显著高于底噪 → 打断（VAD 仅辅助，主要打断靠 ASR 识别结果）
+        var eff=Math.max(VAD_THRESHOLD,V.noiseFloor*VAD_NOISE_MARGIN);
+        if(rms<=eff){
+          if(V.noiseFloor<=0){V.noiseFloor=rms;}else{V.noiseFloor=V.noiseFloor*0.9+rms*0.1;}
+          V.vadHits=0;
+        }else{
+          V.vadHits++;
+          if(V.vadHits>=VAD_HITS){V.vadHits=0;bargeIn();}
+        }
       }
     }else{V.vadHits=0;V.quietTicks=0;V.bargeArmed=false;}
   }
@@ -369,9 +432,9 @@ function pickVoice(){
 function speakFallback(text){
   if(!text)return;
   if(!V.speaking){
-    pauseRec();
+    // 播报中也持续发送音频，回声由 _isEchoLike 过滤
     V.speaking=true;setStatus('播报中…',true);setSpeakingUI(true);
-    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;
+    V.quietTicks=0;V.vadHits=0;V.bargeArmed=false;V.noiseFloor=0;V.bargeWait=0;
   }
   V.fallbackActive++;
   function fallbackEnd(){
@@ -417,8 +480,12 @@ function connect(){
   if(V.timerInt)clearInterval(V.timerInt);
   V.timerInt=setInterval(updateTimer,1000);
   updateTimer();
-  // 接通后小P 立即开口，不先进入"聆听"状态；开场白播完才恢复聆听
-  ws.onopen=function(){setStatus('正在接通…');};
+  // WS 就绪后启动麦克风采集 → 后端 DashScope ASR 流式识别；
+  // 小P 播报时暂停发送音频（防回声），用户开口（VAD 打断）后恢复，ASR 立即识别
+  ws.onopen=function(){
+    setStatus('正在接通…');
+    startAudioStream();
+  };
   ws.onmessage=function(ev){
     var m;
     try{m=JSON.parse(ev.data);}catch(e){return;}
@@ -426,20 +493,24 @@ function connect(){
       // 新回复开始：丢弃上一轮未播完/未播放的音频，sid 从头编号，避免串台
       stopAudio();
       V.speaking=false;
+      V.speakingText='';
       V.replyEnded=false;V.suppressAudio=false;V.nextPlaySid=m.first_sid||0;
     }
-    else if(m.type==='delta'){V.buf+=m.content;updateLive(V.buf);}
+    else if(m.type==='delta'){V.buf+=m.content;V.speakingText+=m.content;updateLive(V.buf);}
     else if(m.type==='audio_start')onAudioStart(m.sid,m.text);
     else if(m.type==='audio')onAudioFrame(m.sid,m.data);
     else if(m.type==='audio_end')onAudioEnd(m.sid);
     else if(m.type==='tts_error')speakFallback(V.fallbackBySid[m.sid]||'');
     else if(m.type==='done'){V.replyEnded=true;setTimeout(audioDone,300);}
     else if(m.type==='cancelled'){V.buf='';setStatus('已打断，请继续');}
+    else if(m.type==='asr_ready'){V.asrReady=true;V.micPaused=V.speaking;setStatus('聆听中…');_dbg('ASR 就绪');}
+    else if(m.type==='asr_error'){setStatus('语音识别不可用: '+(m.message||''),true);}
+    else if(m.type==='asr_text'){if(m.content)handleAsrText(m.content);}
     else if(m.type==='error')setStatus('小P出错了: '+m.message,true);
   };
   ws.onclose=function(){
     var wasActive=V.active;
-    V.ws=null;stopRec();stopAudio();
+    V.ws=null;stopAudioStream();stopAudio();
     V.buf='';V.speaking=false;V.active=false;V.liveBubble=null;render();
     if(V.timerInt){clearInterval(V.timerInt);V.timerInt=null;}
     if(wasActive)setStatus('通话已断开');
@@ -448,7 +519,7 @@ function connect(){
 }
 function hangup(){
   V.active=false;render();
-  stopRec();stopAudio();
+  stopAudioStream();stopAudio();
   V.speaking=false;V.buf='';V.liveBubble=null;
   if(V.timerInt){clearInterval(V.timerInt);V.timerInt=null;}
   if(V.ws){try{V.ws.close();}catch(e){}}
@@ -462,7 +533,7 @@ if(!V.bound){
     hangup(); // 按钮=挂断；语音打断由 VAD（开口说话）负责
   };
   w.addEventListener('beforeunload',function(){
-    try{V.active=false;stopRec();stopAudio();if(V.ws)V.ws.close();V.ws=null;}catch(e){}
+    try{V.active=false;stopAudioStream();stopAudio();if(V.ws)V.ws.close();V.ws=null;}catch(e){}
   });
 }
 render();
