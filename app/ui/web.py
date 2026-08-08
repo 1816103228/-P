@@ -28,6 +28,15 @@ from app.prompts import MOCK_GREETING, PERSONAS
 from app.scheduler import setup_logging, start_scheduler
 from app.ui.components import avatar_svg, render_sidebar
 
+#: 题库来源的显示名（数据库存英文标识，界面统一展示中文）
+SOURCE_LABELS = {
+    "mianshiya": "面试鸭",
+    "leetcode": "LeetCode",
+    "nowcoder": "牛客",
+    "custom": "自定义",
+}
+
+
 st.set_page_config(page_title="面试官小P", page_icon="🎤", layout="centered")
 
 _log = logging.getLogger("ui")
@@ -82,7 +91,7 @@ st.markdown(
 [data-testid="stAppViewContainer"], .stApp {
     background: radial-gradient(1100px 560px at 50% -10%, #e9f0ff 0%, #f8fafd 50%, #f2f5fa 100%);
 }
-.block-container { padding: 0.6rem 1.1rem 4.5rem !important; max-width: 780px !important; }
+.block-container { padding: 0.6rem 1.1rem 0.5rem !important; max-width: 780px !important; }
 html, body, .stApp, .stMarkdown, .stButton, .stTextInput, .stTextArea, .stSelectbox {
     font-family: "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei", system-ui, -apple-system, sans-serif !important;
 }
@@ -107,6 +116,7 @@ footer { visibility: hidden; display: none; }
 .brand-status i { width: 7px; height: 7px; border-radius: 50%; background: #22c55e;
     box-shadow: 0 0 0 3px rgba(34,197,94,.14); animation: dp 2.2s ease-in-out infinite; }
 @keyframes dp { 0%,100%{opacity:1} 50%{opacity:.35} }
+.chat-mode { font-size: 13px; color: #7b879c; letter-spacing: .4px; }
 
 /* 眨眼 */
 .av-eye { animation: bl 4.5s ease-in-out infinite; transform-box: fill-box; transform-origin: center; }
@@ -135,10 +145,24 @@ button[data-variant="pills"][aria-checked="true"] { background: #4f6ef7 !importa
     border-radius: 16px 16px 5px 16px; font-size: 15px; line-height: 1.7;
     box-shadow: 0 3px 10px rgba(79,110,247,.22); word-break: break-word; max-width: 82%; }
 [data-testid="stChatMessage"] { background: rgba(255,255,255,.92); border: 1px solid #e8edf6;
-    border-radius: 16px 16px 16px 5px; padding: 12px 16px; margin: 14px 0;
-    box-shadow: 0 1px 4px rgba(20,40,80,.05); }
-[data-testid="stChatMessage"] p { margin: 0; }
+    border-radius: 16px 16px 16px 5px; padding: 14px 18px 20px; margin: 14px 0;
+    box-shadow: 0 1px 4px rgba(20,40,80,.05); max-width: 96%; }
+[data-testid="stChatMessage"] p { margin: 0 0 .4em; }
+[data-testid="stChatMessage"] p:last-child { margin-bottom: 0; }
 [data-testid="stChatMessage"] [data-testid="stMarkdownContainer"] { font-size: 15px; line-height: 1.7; }
+
+/* ===== 消息白框纵向延伸：底部余量一直留到输入框 ===== */
+[data-testid="stMainBlockContainer"] { flex: 1; display: flex; flex-direction: column; }
+[data-testid="stMainBlockContainer"] > [data-testid="stVerticalBlock"] { flex: 1; display: flex; flex-direction: column; }
+[data-testid="stVerticalBlock"] > [data-testid="stLayoutWrapper"]:has(+ [data-testid="stElementContainer"]:last-child) { flex: 1 1 auto; }
+[data-testid="stLayoutWrapper"] > [data-testid="stChatMessage"] { flex: 1; height: auto; }
+[data-testid="stVerticalBlock"] > [data-testid="stLayoutWrapper"]:has(+ [data-testid="stElementContainer"]:last-child) > [data-testid="stChatMessage"] { margin-bottom: 0; }
+[data-testid="stChatMessageContent"] { margin: 0 !important; align-self: flex-start !important; }
+/* 压缩 Streamlit 输入框上方的固定占位，让白框能延伸到输入框上方 */
+[data-testid="stAppScrollToBottomContainer"] > div:not([data-testid="stMainBlockContainer"]):not([data-testid="stBottom"]) {
+    flex: 0 0 0 !important;
+    height: 0 !important;
+}
 
 /* ===== 欢迎区 ===== */
 .hero { text-align: center; margin: 12px 0 10px; }
@@ -194,12 +218,29 @@ button[data-variant="pills"]:hover {
 }
 /* 题库对话框加宽：左侧题目列表 + 右侧"已选题目"面板 */
 [data-testid="stDialog"] {
-    width: min(1600px, 98vw) !important;
+    width: min(2080px, 100vw) !important;
     max-width: none !important;
+}
+/* 弹窗垂直居中：父容器是 flex，上下 margin:auto 撑开剩余空间；
+   弹窗高度超过视口时 margin 自动归零、顶部对齐并随容器滚动，避免遮挡 */
+[data-testid="stDialog"] {
+    margin-top: auto !important;
+    margin-bottom: auto !important;
+}
+/* 内容容器默认固定 500px，覆盖为铺满对话框（留 16px 边距） */
+[data-testid="stDialog"] > div {
+    width: 100% !important;
+    max-width: calc(100% - 32px) !important;
 }
 /* 对话框内按钮文字不换行（"加入面试"等保持单行平铺） */
 [data-testid="stDialog"] button {
     white-space: nowrap !important;
+}
+/* 定制面试对话框瘦身：普通表单宽度，不随题库对话框加宽 */
+[data-testid="stDialog"]:has(.dialog-custom) { width: 100vw !important; }
+[data-testid="stDialog"]:has(.dialog-custom) > div {
+    width: min(560px, calc(100vw - 32px)) !important;
+    max-width: min(560px, calc(100vw - 32px)) !important;
 }
 </style>""",
     unsafe_allow_html=True,
@@ -240,6 +281,14 @@ def switch_coach():
     ]
 
 
+def reset_to_home():
+    """结束当前会话并返回欢迎首页，可重新选择面试 / 答疑 / 定制。"""
+    st.session_state.session = None
+    st.session_state.history = []
+    st.session_state.selected_questions = []
+    st.session_state.pop("_force_mode", None)
+
+
 def _add_selected(qid: int, title: str, difficulty: str, source: str) -> None:
     """把一道题加入"已选题目"（on_click 回调，渲染前执行，界面即时刷新）。"""
     if not any(s["id"] == qid for s in st.session_state.selected_questions):
@@ -266,6 +315,7 @@ def _toggle_favorite(qid: int) -> None:
 # ---- 对话框：定制面试 ----
 @st.dialog("🎯 定制面试")
 def custom_interview_dialog():
+    st.markdown('<div class="dialog-custom"></div>', unsafe_allow_html=True)
     job_title = st.text_input("目标岗位", placeholder="如：Python 后端工程师")
     jd = st.text_area("招聘信息（选填）", placeholder="粘贴岗位职责与任职要求…", height=120)
     if st.button("生成面试题", type="primary", use_container_width=True):
@@ -354,7 +404,12 @@ def question_bank_dialog():
                 else:
                     st.error("没有可导入的题目，请检查 CSV 格式")
 
-    srcs = ["全部"] + [r["source"] for r in db.count_by_source()]
+    src_items = [
+        (SOURCE_LABELS.get(r["source"], r["source"]), r["source"])
+        for r in db.count_by_source()
+    ]
+    srcs = ["全部"] + [label for label, _ in src_items]
+    src_key_by_label = {label: key for label, key in src_items}
     companies = ["全部"] + db.list_companies()
     c1, c2, c3, c4 = st.columns(4)
     with c1:
@@ -375,7 +430,7 @@ def question_bank_dialog():
     q_rows = db.browse_questions(
         keyword=kw or None,
         tags=tag_filter or None,
-        source=None if src_filter == "全部" else src_filter,
+        source=None if src_filter == "全部" else src_key_by_label.get(src_filter),
         difficulty=None if diff_filter == "全部" else diff_filter,
         company=None if company_filter == "全部" else company_filter,
         favorite_only=fav_only,
@@ -392,10 +447,11 @@ def question_bank_dialog():
             st.caption("暂无匹配的题目")
         for r in q_rows:
             is_sel = any(s["id"] == r["id"] for s in sel)
-            c = st.columns([3, 2, 2], vertical_alignment="center")
-            meta = f"`{r['source']}` · `{r['difficulty'] or '难度未知'}`"
+            c = st.columns([4, 2, 2], vertical_alignment="center")
+            src_label = SOURCE_LABELS.get(r["source"], r["source"])
+            meta_parts = [html.escape(src_label), html.escape(r["difficulty"] or "难度未知")]
             if r["company"]:
-                meta += f" · `{r['company']}`"
+                meta_parts.append(html.escape(r["company"]))
             if is_sel:
                 # 已加入的题目高亮：蓝色底色 + 左侧色条 + 按钮变为"已加入"
                 c[0].markdown(
@@ -403,7 +459,7 @@ def question_bank_dialog():
                     'border-radius:8px;padding:6px 10px;">'
                     f'<span style="font-weight:600;">{html.escape(r["title"] or "")}</span>'
                     '<div style="color:#4f6ef7;font-size:12px;margin-top:2px;">'
-                    f"✓ 已加入面试 · {html.escape(r['source'])} · "
+                    f"✓ 已加入面试 · {html.escape(SOURCE_LABELS.get(r['source'], r['source']))} · "
                     f"{html.escape(r['difficulty'] or '难度未知')}</div></div>",
                     unsafe_allow_html=True,
                 )
@@ -411,20 +467,33 @@ def question_bank_dialog():
                     "✓ 已加入",
                     key=f"qb_add_{r['id']}",
                     type="primary",
+                    use_container_width=True,
                     on_click=_remove_selected,
                     args=(r["id"],),
                 )
             else:
-                c[0].markdown(f"**{r['title']}**\n\n{meta}")
+                # 标题 + 紧凑的小灰字元信息（紧贴题目，界面更整齐）
+                c[0].markdown(
+                    '<div style="line-height:1.45;">'
+                    f'<div style="font-weight:600;">{html.escape(r["title"] or "")}</div>'
+                    f'<div style="font-size:12px;color:#6b7280;margin-top:1px;">'
+                    f"{' · '.join(meta_parts)}</div></div>",
+                    unsafe_allow_html=True,
+                )
                 c[1].button(
                     "加入面试",
                     key=f"qb_add_{r['id']}",
+                    use_container_width=True,
                     on_click=_add_selected,
                     args=(r["id"], r["title"], r["difficulty"] or "未知", r["source"]),
                 )
             fav_label = "★ 已收藏" if db.is_favorite(r["id"]) else "☆ 收藏"
             c[2].button(
-                fav_label, key=f"qb_fav_{r['id']}", on_click=_toggle_favorite, args=(r["id"],)
+                fav_label,
+                key=f"qb_fav_{r['id']}",
+                use_container_width=True,
+                on_click=_toggle_favorite,
+                args=(r["id"],),
             )
     if right is not None:
         with right:
@@ -526,6 +595,15 @@ def render_welcome():
 if not st.session_state.history:
     render_welcome()
 else:
+    # 面试进行中提供返回入口，避免进入聊天视图后无法回到欢迎首页
+    top_c, back_c = st.columns([4, 1], vertical_alignment="center")
+    with top_c:
+        st.markdown(
+            f'<div class="chat-mode">当前模式：{html.escape(st.session_state.mode)}</div>',
+            unsafe_allow_html=True,
+        )
+    with back_c:
+        st.button("🏠 返回首页", on_click=reset_to_home, use_container_width=True)
     for role, text in st.session_state.history:
         if role == "user":
             body = html.escape(text).replace("\n", "<br>")

@@ -62,9 +62,9 @@ TTS_CHUNK_TARGET = 8 * 1024
 #: 句与句之间的语气不再被割裂，听起来更自然、不机械）。
 TTS_FIRST_CHARS = 45  # 首块阈值：尽快开播
 TTS_CHUNK_CHARS = 90  # 后续块阈值：约 2-3 句
-# 串行合成：每段 6-8 秒音频，合成快于播放所以不会断流；
-# 且"某段失败→剩余段整体降级本地语音"的判定是确定的，不会出现混合音色。
-TTS_MAX_CONCURRENCY = 1
+# 并行合成：多段同时交给 CosyVoice（每段请求 4-6 秒），整条回复时间大幅缩短；
+# 合成快于播放，浏览器队列不会断流。失败降级仍按"段"判定，个别失败只影响该段。
+TTS_MAX_CONCURRENCY = 3
 
 #: edge-tts 跨回复熔断：连续失败 N 次后暂停在线合成一段时间，直接降级本地语音（避免每次干等超时）
 TTS_CIRCUIT_FAILS = 2
@@ -260,11 +260,12 @@ async def _synthesize(ws: WebSocket, state: dict, sentence: str) -> bool:
         """尝试一次在线合成，返回 (是否已推送过音频, 是否完整成功)。"""
         if config.VOICE_TTS == "cosyvoice":
             audio = await _cosyvoice_synthesize(sentence)
-            if not audio:
-                return False, False
-            # CosyVoice 一次返回整段音频，作为一个播放单元推送
-            await _flush([audio], sentence)
-            return True, True
+            if audio:
+                # CosyVoice 一次返回整段音频，作为一个播放单元推送
+                await _flush([audio], sentence)
+                return True, True
+            # CosyVoice 不可用（欠费/配额/网络）→ 回退 edge-tts，避免直接降级本地机械音
+            logger.warning("CosyVoice 不可用，回退 edge-tts")
         if edge_tts is None:
             return False, False
         comm = edge_tts.Communicate(

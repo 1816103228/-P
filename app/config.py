@@ -30,7 +30,7 @@ CRAWL_INTERVAL_HOURS = int(os.getenv("CRAWL_INTERVAL_HOURS", "24"))  # 间隔小
 SCHEDULER_TZ = os.getenv("SCHEDULER_TZ", "Asia/Shanghai").strip()
 
 # ---- 爬虫 ----
-CRAWL_PAGES_PER_CATEGORY = int(os.getenv("CRAWL_PAGES_PER_CATEGORY", "10"))
+CRAWL_PAGES_PER_CATEGORY = int(os.getenv("CRAWL_PAGES_PER_CATEGORY", "15"))
 CRAWL_REQUEST_DELAY = float(os.getenv("CRAWL_REQUEST_DELAY", "0.3"))
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "3"))
 LEETCODE_CACHE_HOURS = int(os.getenv("LEETCODE_CACHE_HOURS", "72"))

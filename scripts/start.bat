@@ -1,76 +1,77 @@
 @echo off
+chcp 65001 >nul
 setlocal enabledelayedexpansion
 cd /d %~dp0..
 
 echo ============================================
-echo   ÃæÊÔ¹ÙÐ¡P - Python/ºó¶ËÃæÊÔ Agent
+echo   é¢è¯•å®˜å°P - Python/åŽç«¯é¢è¯• Agent
 echo ============================================
 echo.
 
 where python >nul 2>&1
 if errorlevel 1 (
-    echo [´íÎó] Î´ÕÒµ½ python£¬ÇëÏÈ°²×° Python 3.10+ ²¢¹´Ñ¡ "Add to PATH"
+    echo [é”™è¯¯] æœªæ‰¾åˆ° pythonï¼Œè¯·å…ˆå®‰è£… Python 3.10+ å¹¶å‹¾é€‰ "Add to PATH"
     pause
     exit /b 1
 )
 
-echo [1/6] °²×°ÒÀÀµ...
+echo [1/6] å®‰è£…ä¾èµ–...
 set "PIP_OK="
 for %%i in (1 2 3) do (
     if not defined PIP_OK (
-        echo   µÚ %%i ´Î³¢ÊÔ°²×°ÒÀÀµ...
+        echo   ç¬¬ %%i æ¬¡å°è¯•å®‰è£…ä¾èµ–...
         python -m pip install -e . --quiet --disable-pip-version-check
         if not errorlevel 1 set "PIP_OK=1"
     )
 )
 if not defined PIP_OK (
-    echo   µ±Ç°¾µÏñÔ´²»¿ÉÓÃ£¬¸ÄÓÃ¹Ù·½ PyPI °²×°...
+    echo   å½“å‰é•œåƒæºä¸å¯ç”¨ï¼Œæ”¹ç”¨å®˜æ–¹ PyPI å®‰è£…...
     python -m pip install -e . --quiet --disable-pip-version-check --index-url https://pypi.org/simple
     if errorlevel 1 (
-        echo [´íÎó] ÒÀÀµ°²×°Ê§°Ü£¬Çë¼ì²éÍøÂçÁ¬½Ó
+        echo [é”™è¯¯] ä¾èµ–å®‰è£…å¤±è´¥ï¼Œè¯·æ£€æŸ¥ç½‘ç»œè¿žæŽ¥
         pause
         exit /b 1
     )
 )
-echo [OK] ÒÀÀµ°²×°Íê³É
+echo [OK] ä¾èµ–å®‰è£…å®Œæˆ
 
-echo [2/6] ¼ì²â¶Ë¿Ú...
+echo [2/6] æ£€æµ‹ç«¯å£...
 
 netstat -ano | findstr ":8501 " >nul 2>&1
 set "PORT=8501"
 if not errorlevel 1 (
-    echo [ÌáÊ¾] 8501 ¶Ë¿ÚÒÑ±»Õ¼ÓÃ£¬¸ÄÓÃ 8502
+    echo [æç¤º] 8501 ç«¯å£å·²è¢«å ç”¨ï¼Œæ”¹ç”¨ 8502
     set "PORT=8502"
 )
 
-echo [3/6] Æô¶¯ÓïÒôÍ¨»°·þÎñ...
+echo [3/6] å¯åŠ¨è¯­éŸ³é€šè¯æœåŠ¡...
 set "WEB_URL=http://localhost:!PORT!"
 start "MianShiGuanXiaoP-Voice" cmd /c "set WEB_URL=http://localhost:!PORT!&&python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765"
 
-echo [4/6] Æô¶¯ Web ·þÎñ...
+echo [4/6] å¯åŠ¨ Web æœåŠ¡...
 start "MianShiGuanXiaoP-Server" python -m streamlit run app/ui/web.py --server.headless true --server.port !PORT!
 
-echo [5/6] µÈ´ý·þÎñ¾ÍÐ÷...
+echo [5/6] ç­‰å¾…æœåŠ¡å°±ç»ª...
 timeout /t 5 /nobreak >nul
 
-echo [6/6] ¼ì²éÓïÒô·þÎñ...
+echo [6/6] æ£€æŸ¥è¯­éŸ³æœåŠ¡...
 powershell -NoProfile -Command "try{$r=Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 3; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}"
 if errorlevel 1 (
-    echo [¾¯¸æ] ÓïÒô·þÎñ¿ÉÄÜÎ´Æô¶¯³É¹¦£¨8765 ¶Ë¿Ú£©£¬ÎÄ×Ö°æÈÔ¿ÉÊ¹ÓÃ
-    echo        Çë²é¿´¡¸MianShiGuanXiaoP-Voice¡¹´°¿ÚÖÐµÄ±¨´í
+    echo [è­¦å‘Š] è¯­éŸ³æœåŠ¡å¯èƒ½æœªå¯åŠ¨æˆåŠŸï¼ˆ8765 ç«¯å£ï¼‰ï¼Œæ–‡å­—ç‰ˆä»å¯ä½¿ç”¨
+    echo        è¯·æŸ¥çœ‹ã€ŒMianShiGuanXiaoP-Voiceã€çª—å£ä¸­çš„æŠ¥é”™
 ) else (
-    echo [OK] ÓïÒô·þÎñÒÑ¾ÍÐ÷
+    echo [OK] è¯­éŸ³æœåŠ¡å·²å°±ç»ª
 )
 
-echo ÕýÔÚ´ò¿ªä¯ÀÀÆ÷: http://localhost:!PORT!
+echo æ­£åœ¨æ‰“å¼€æµè§ˆå™¨: http://localhost:!PORT!
 start "" "http://localhost:!PORT!"
 
 echo.
 echo ============================================
-echo   ·þÎñÒÑÈ«²¿Æô¶¯
-echo   ÎÄ×Ö°æ:   http://localhost:!PORT!
-echo   ÓïÒôÍ¨»°: http://127.0.0.1:8765/
-echo   £¨ÎÄ×Ö°æÓÒÏÂ½ÇµÄµç»°°´Å¥Ò²»á´ò¿ªÓïÒôÍ¨»°Ò³£©
-echo   Í£Ö¹: ¹Ø±Õ¡¸MianShiGuanXiaoP-Server¡¹Óë¡¸MianShiGuanXiaoP-Voice¡¹´°¿Ú
+echo   æœåŠ¡å·²å…¨éƒ¨å¯åŠ¨
+echo   æ–‡å­—ç‰ˆ:   http://localhost:!PORT!
+echo   è¯­éŸ³é€šè¯: http://127.0.0.1:8765/
+echo   ï¼ˆæ–‡å­—ç‰ˆå³ä¸‹è§’çš„ç”µè¯æŒ‰é’®ä¹Ÿä¼šæ‰“å¼€è¯­éŸ³é€šè¯é¡µï¼‰
+echo   åœæ­¢: å…³é—­ã€ŒMianShiGuanXiaoP-Serverã€ä¸Žã€ŒMianShiGuanXiaoP-Voiceã€çª—å£
 echo ============================================
 pause

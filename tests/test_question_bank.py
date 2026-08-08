@@ -104,6 +104,20 @@ class QuestionBankChecks(unittest.TestCase):
         if tags:
             self.assertGreater(tags[0][1], 0)
 
+    def test_update_question_details(self):
+        """详情补全：按 source+source_id 回写答案/难度（用后恢复）。"""
+        row = db.search_questions(limit=1)[0]
+        old_answer = row["answer"]
+        try:
+            n = db.update_question_details(
+                row["source"], row["source_id"], answer="补全测试答案", difficulty=row["difficulty"]
+            )
+            self.assertEqual(n, 1)
+            row2 = db.get_question_by_id(row["id"])
+            self.assertEqual(row2["answer"], "补全测试答案")
+        finally:
+            db.update_question_details(row["source"], row["source_id"], answer=old_answer)
+
     def test_browse_questions_tag_filter(self):
         """标签筛选生效，且可与其他条件叠加。"""
         rows = db.browse_questions(tags=["Redis"], limit=5)

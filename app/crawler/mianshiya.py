@@ -36,7 +36,27 @@ CATEGORIES = [
     "os",
     "algorithm",
     "project",
+    # 后端专题分类：与 Python/后端面试强相关，扩充题库
+    "redis",
+    "mysql",
+    "middleware",
+    "microservice",
+    "mq",
+    "docker",
+    "kubernetes",
 ]
+
+#: 详情页答案文本开头的界面噪音（推荐答案/视频讲解等按钮文案）
+_ANSWER_NOISE = re.compile(
+    r"^(推荐答案|视频讲解|测试一下|面试问答|开始面试|隐藏答案|回答重点|答案|复制|分享|展开|收起|关注)+\s*"
+)
+_ANSWER_MAX = 2000
+
+
+def _clean_answer(text: str) -> str | None:
+    """去掉答案前的界面按钮文案，截断到合理长度。"""
+    t = _ANSWER_NOISE.sub("", text or "").strip()
+    return t[:_ANSWER_MAX] if t else None
 
 
 class MianShiYaAdapter(SourceAdapter):
@@ -48,26 +68,125 @@ class MianShiYaAdapter(SourceAdapter):
         self._session = make_session()
 
     def fetch(self, limit: int | None = None) -> list[dict]:
-        """并行抓取全部分类，limit 为最多返回的题目条数（调试用）。"""
+        """并行抓取全部分类 + 热门题，再抓详情补全答案；limit 为最多返回条数（调试用）。"""
         pages = config.CRAWL_PAGES_PER_CATEGORY
         out: list[dict] = []
         with ThreadPoolExecutor(max_workers=config.CRAWL_WORKERS) as ex:
             futures = [ex.submit(self._fetch_category, cat, pages) for cat in CATEGORIES]
+            futures.append(ex.submit(self._fetch_hot))
             for fut in as_completed(futures):
                 try:
                     out.extend(fut.result())
-                except Exception as e:  # 单分类失败不影响其他分类
-                    logger.warning("mianshiya 分类抓取失败: %s", e)
+                except Exception as e:  # 单分类/热门失败不影响其他
+                    logger.warning("mianshiya 列表抓取失败: %s", e)
+        out = self._dedupe_rows(out)
+        out = self._enrich_details(out)
         if limit:
             out = out[:limit]
         return out
+
+    @staticmethod
+    def _dedupe_rows(rows: list[dict]) -> list[dict]:
+        """同一道题可能同时出现在多个分类/热门里，按 source_id 去重。"""
+        seen: dict[str, dict] = {}
+        for r in rows:
+            seen.setdefault(r["source_id"], r)
+        return list(seen.values())
+
+    def _fetch_hot(self) -> list[dict]:
+        """热门题列表：https://www.mianshiya.com/hot/question（额外的公开题目）。"""
+        resp = self._session.get(f"{BASE}hot/question", headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        rows: list[dict] = []
+        for a in soup.select('a[href*="/question/"]'):
+            qid = a["href"].rsplit("/", 1)[-1]
+            if not qid.isdigit():
+                continue
+            title = re.sub(r"^\d+[.\s]*", "", a.get_text(strip=True))
+            title = re.sub(r"[\d.]+k热度$", "", title).strip()
+            if not title:
+                continue
+            rows.append(
+                {
+                    "source_id": qid,
+                    "title": title,
+                    "content": None,
+                    "answer": None,
+                    "tags": ["热门"],
+                    "difficulty": "中等",
+                    "url": f"{BASE}question/{qid}",
+                }
+            )
+        return rows
+
+    def _enrich_details(self, rows: list[dict]) -> list[dict]:
+        """抓取每道题详情页，补全答案/难度/标签（详情页免登录可访问）。"""
+        qid_map = {r["source_id"]: r for r in rows}
+        with ThreadPoolExecutor(max_workers=config.CRAWL_WORKERS) as ex:
+            futures = {ex.submit(self._fetch_detail, qid): qid for qid in qid_map}
+            for fut in as_completed(futures):
+                qid = futures[fut]
+                try:
+                    detail = fut.result()
+                except Exception as e:
+                    logger.warning("mianshiya 详情抓取失败 %s: %s", qid, e)
+                    continue
+                if detail:
+                    row = qid_map[qid]
+                    for k, v in detail.items():
+                        if v:
+                            row[k] = v
+        return rows
+
+    def _fetch_detail(self, qid: str) -> dict | None:
+        """单个题目详情页：提取真实标题、难度、标签与推荐答案。"""
+        resp = self._session.get(f"{BASE}question/{qid}", headers=HEADERS, timeout=30)
+        resp.raise_for_status()
+        soup = BeautifulSoup(resp.text, "lxml")
+        h1 = soup.select_one("h1")
+        if not h1:
+            return None
+        title = re.sub(r"^\d+[.\s]*", "", h1.get_text(strip=True))
+        tags = [t.get_text(strip=True) for t in soup.select(".ant-tag")]
+        difficulty = "中等"
+        real_tags: list[str] = []
+        for t in tags:
+            if t in ("简单", "中等", "困难"):
+                difficulty = t
+            elif t != "VIP":
+                real_tags.append(t)
+        answer = None
+        ans_el = soup.select_one('[class*="answer"]')
+        if ans_el:
+            answer = _clean_answer(ans_el.get_text(" ", strip=True))
+        return {
+            "title": title,
+            "difficulty": difficulty,
+            "tags": real_tags or None,
+            "answer": answer,
+        }
+
+    def after_store(self, rows: list[dict]) -> None:
+        """入库后把抓到的答案/难度回写已存在的题目（详情补全）。"""
+        from app import db
+
+        for r in rows:
+            if not (r.get("answer") or r.get("difficulty")):
+                continue
+            db.update_question_details(
+                self.name,
+                r["source_id"],
+                answer=r.get("answer"),
+                difficulty=r.get("difficulty"),
+            )
 
     def _fetch_category(self, category: str, pages: int) -> list[dict]:
         rows: list[dict] = []
         for page in range(1, pages + 1):
             try:
                 url = f"{BASE}?category={category}&current={page}&pageSize=20"
-                resp = self._session.get(url, headers=HEADERS, timeout=20)
+                resp = self._session.get(url, headers=HEADERS, timeout=30)
                 resp.raise_for_status()
                 soup = BeautifulSoup(resp.text, "lxml")
                 for tr in soup.select("tr.ant-table-row"):

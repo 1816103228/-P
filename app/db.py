@@ -540,7 +540,51 @@ def is_favorite(question_id: int) -> bool:
         row = conn.execute(
             "SELECT 1 FROM favorites WHERE question_id = ?", (question_id,)
         ).fetchone()
-    return row is not None
+        return row is not None
+
+
+def update_question_details(
+    source: str,
+    source_id: str,
+    *,
+    answer: str | None = None,
+    difficulty: str | None = None,
+) -> int:
+    """按 source+source_id 更新题目答案/难度（详情页补全用），返回受影响行数。"""
+    sets: list[str] = []
+    params: list = []
+    if answer is not None:
+        sets.append("answer = ?")
+        params.append(answer)
+    if difficulty is not None:
+        sets.append("difficulty = ?")
+        params.append(difficulty)
+    if not sets:
+        return 0
+    params += [source, source_id]
+    sql = f"UPDATE questions SET {', '.join(sets)} WHERE source = ? AND source_id = ?"
+
+    def _run() -> int:
+        with closing(get_conn()) as conn, conn:
+            return conn.execute(sql, params).rowcount
+
+    try:
+        return _run()
+    except sqlite3.DatabaseError:
+        # FTS 外部内容表与主表 rowid 错位时，UPDATE 触发器会报 malformed：重建索引后重试
+        logger.warning("更新题目详情触发 FTS 异常，重建全文索引后重试")
+        _rebuild_fts()
+        return _run()
+
+
+def _rebuild_fts() -> None:
+    """重建 FTS5 索引（外部内容表 rowid 与主表错位时用于修复）。"""
+    with closing(get_conn()) as conn, conn:
+        for t in ("questions_fts", "questions_fts_tr"):
+            try:
+                conn.execute(f"INSERT INTO {t}({t}) VALUES('rebuild')")
+            except sqlite3.OperationalError:
+                pass
 
 
 def list_favorites(limit: int = 50) -> list[sqlite3.Row]:

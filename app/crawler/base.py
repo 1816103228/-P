@@ -50,4 +50,8 @@ class SourceAdapter(ABC):
         for r in rows:
             r.setdefault("source", self.name)
         stats = db.upsert_many(rows)
+        self.after_store(rows)
         return {"source": self.name, **stats}
+
+    def after_store(self, rows: list[dict]) -> None:
+        """入库后的补全钩子（如写回详情答案），默认不做。子类可覆盖。"""

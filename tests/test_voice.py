@@ -105,6 +105,7 @@ class VoiceServerTests(unittest.TestCase):
         with (
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=fail_once),
+            mock.patch("app.voice_server.TTS_MAX_CONCURRENCY", 1),  # 串行：保证降级判定确定
             client.websocket_connect("/ws/voice") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白（同样走降级，不计数）
@@ -177,6 +178,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server.config.VOICE_TTS", "edge"),
             # 本测试只关心"中途失败不重播"，禁用熔断避免开场白失败提前打开熔断
             mock.patch("app.voice_server._tts_circuit_open", return_value=False),
+            mock.patch("app.voice_server.TTS_MAX_CONCURRENCY", 1),  # 串行：保证断言确定
             TestClient(app) as client,
             client.websocket_connect("/ws/voice") as ws,
         ):
@@ -300,6 +302,7 @@ class VoiceServerTests(unittest.TestCase):
     def test_cosyvoice_synthesize_sends_unit(self, mock_chat_stream, mock_fts):
         """VOICE_TTS=cosyvoice：整段音频作为一个播放单元推送。"""
         FAKE_AUDIO = b"\x00\x01\x02fake-cosy-audio"
+
         with (
             mock.patch("app.voice_server.config.VOICE_TTS", "cosyvoice"),
             mock.patch("app.voice_server.config.DASHSCOPE_API_KEY", "sk-test"),
@@ -349,6 +352,7 @@ class VoiceServerTests(unittest.TestCase):
         with (
             mock.patch("app.voice_server.config.VOICE_TTS", "cosyvoice"),
             mock.patch("app.voice_server.config.DASHSCOPE_API_KEY", "sk-test"),
+            mock.patch("app.voice_server.edge_tts", None),  # 回退路径确定失败，才能测重试
             mock.patch("app.voice_server._cosyvoice_synthesize", side_effect=flaky),
         ):
             ok = asyncio.run(_synthesize(ws, {"sid": 0}, "你好"))
@@ -465,7 +469,7 @@ class VoiceServerTests(unittest.TestCase):
         self.assertEqual(data, b"MP3DATA")
 
     def test_cosyvoice_request_accepts_base64_data(self):
-        """若响应直接带 base64 音频（流式/内联），无需二次下载。"""
+        """若响应直接带 base64 音频，无需二次下载。"""
 
         class FakeResp:
             def __init__(self, json_data=None):

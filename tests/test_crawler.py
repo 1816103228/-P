@@ -18,6 +18,14 @@ MIANSHIYA_ROW = """
 </tbody></table>
 """
 
+HOT_HTML = '<a href="/question/999">1. 什么是 AI Agent？它和直接调用大模型 API 有什么区别？3.2k热度</a>'
+
+DETAIL_HTML = """
+<h1>42. 谈谈 Python 的 GIL</h1>
+<span class="ant-tag">困难</span><span class="ant-tag">Python</span>
+<div class="answer-content">推荐答案视频讲解隐藏答案回答重点GIL 是全局解释器锁，限制多线程并行执行……</div>
+"""
+
 LEETCODE_PAYLOAD = {
     "stat_status_pairs": [
         {
@@ -79,7 +87,26 @@ class MianShiYaTests(unittest.TestCase):
             mock.patch.object(mianshiya.config, "CRAWL_PAGES_PER_CATEGORY", 1),
         ):
             rows = ad.fetch(limit=2)
-        self.assertEqual(len(rows), 2)
+        # mock 页面全部是同一道题（qid=123），跨分类/热门去重后只剩 1 条
+        self.assertEqual(len(rows), 1)
+
+    @mock.patch("requests.Session.get", return_value=_fake_get(HOT_HTML))
+    def test_fetch_hot(self, mock_get):
+        ad = mianshiya.MianShiYaAdapter()
+        rows = ad._fetch_hot()
+        self.assertEqual(len(rows), 1)
+        self.assertEqual(rows[0]["source_id"], "999")
+        self.assertIn("AI Agent", rows[0]["title"])
+        self.assertNotIn("热度", rows[0]["title"])
+
+    @mock.patch("requests.Session.get", return_value=_fake_get(DETAIL_HTML))
+    def test_fetch_detail(self, mock_get):
+        ad = mianshiya.MianShiYaAdapter()
+        d = ad._fetch_detail("42")
+        self.assertIsNotNone(d)
+        self.assertEqual(d["difficulty"], "困难")
+        self.assertIn("GIL", d["title"])
+        self.assertTrue(d["answer"].startswith("GIL"))
 
 
 class LeetCodeTests(unittest.TestCase):
