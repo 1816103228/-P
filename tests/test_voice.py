@@ -593,8 +593,8 @@ class VoiceServerTests(unittest.TestCase):
 
     @mock.patch("app.agent.coach.db.fts_search", return_value=[])
     @mock.patch("app.agent.llm.chat_stream", return_value=iter(["标准", "答案"]))
-    def test_asr_start_failure_allows_retry(self, mock_chat_stream, mock_fts):
-        """ASR 启动失败后 asr 置 None：前端重发 asr_start 可重新创建实例并恢复识别。"""
+    def test_asr_start_failure_auto_retries(self, mock_chat_stream, mock_fts):
+        """ASR 启动失败后由服务端监督任务自动重连（指数退避），无需前端反复重发。"""
         # 记录每个实例收到的 sample_rate，并让前两次 start 失败、第三次成功
         start_calls: list[tuple] = []
         inst_id = {"n": 0}
@@ -645,17 +645,14 @@ class VoiceServerTests(unittest.TestCase):
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
             mock.patch("app.voice_server.DashScopeASR", FakeASR),
+            mock.patch("app.voice_server.ASR_RETRY_DELAY", 0.05),
             client.websocket_connect("/ws/voice") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
-            # 第一次 asr_start：失败 → asr_error
+            # asr_start：处理器首次启动失败 → asr_error，监督任务接管
             ws.send_text(json.dumps({"type": "asr_start", "sample_rate": 48000}))
             self.assertEqual(json.loads(ws.receive_text())["type"], "asr_error")
-            # 第二次重发：失败 → asr_error（实例重建，sample_rate 保留）
-            ws.send_text(json.dumps({"type": "asr_start", "sample_rate": 48000}))
-            self.assertEqual(json.loads(ws.receive_text())["type"], "asr_error")
-            # 第三次重发：成功 → asr_ready
-            ws.send_text(json.dumps({"type": "asr_start", "sample_rate": 48000}))
+            # 监督任务静默重试（失败不重复打扰前端），成功后才回传 asr_ready
             self.assertEqual(json.loads(ws.receive_text())["type"], "asr_ready")
         # 每个实例都拿到前端上报的采样率
         self.assertEqual(len(FakeASR.instances), 3, "失败后应重建实例而非复用")
@@ -664,8 +661,8 @@ class VoiceServerTests(unittest.TestCase):
 
     @mock.patch("app.agent.coach.db.fts_search", return_value=[])
     @mock.patch("app.agent.llm.chat_stream", return_value=iter(["标准", "答案"]))
-    def test_asr_midstream_error_notifies_and_restarts(self, mock_chat_stream, mock_fts):
-        """ASR 识别流中途出错：服务端回传 asr_error 并把 asr 置 None，前端重发 asr_start 可恢复。"""
+    def test_asr_midstream_error_auto_reconnects(self, mock_chat_stream, mock_fts):
+        """ASR 识别流中途断开（如心跳 PONG 超时）：服务端自动重连并回传 asr_ready。"""
         frames = {"n": 0}
 
         class FakeASR:
@@ -692,6 +689,7 @@ class VoiceServerTests(unittest.TestCase):
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
             mock.patch("app.voice_server.DashScopeASR", FakeASR),
+            mock.patch("app.voice_server.ASR_RETRY_DELAY", 0.05),
             client.websocket_connect("/ws/voice") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
@@ -702,8 +700,7 @@ class VoiceServerTests(unittest.TestCase):
                 json.dumps({"type": "audio", "data": base64.b64encode(b"\x00" * 64).decode()})
             )
             self.assertEqual(json.loads(ws.receive_text())["type"], "asr_error")
-            # 服务端已把 asr 置 None：重发 asr_start 重建实例并恢复
-            ws.send_text(json.dumps({"type": "asr_start", "sample_rate": 16000}))
+            # 监督任务自动重连（无需前端重发 asr_start）
             self.assertEqual(json.loads(ws.receive_text())["type"], "asr_ready")
         self.assertEqual(len(FakeASR.instances), 2, "识别中断后应重建实例")
 

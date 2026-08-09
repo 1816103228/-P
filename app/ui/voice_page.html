@@ -699,17 +699,9 @@ function connect(){
     else if(m.type==='asr_ready'){V.asrReady=true;V.asrRetries=0;V.lastAsrEvent=Date.now();setStatus('聆听中…');_dbg('ASR 就绪');}
     else if(m.type==='asr_error'){
       V.asrReady=false;V.lastAsrEvent=0; // ASR 失效：音量兜底打断立即生效
-      setStatus('语音识别不可用: '+(m.message||''),true);
-      // DashScope 瞬时网络/限流问题：3 秒后自动重试几次，避免用户必须重连才能恢复识别
-      if(V.active&&V.asrRetries<3&&V.ws&&V.ws.readyState===1){
-        V.asrRetries++;
-        _dbg('ASR 失败，'+V.asrRetries+'/3 次重试…');
-        setTimeout(function(){
-          if(V.active&&V.ws&&V.ws.readyState===1){
-            V.ws.send(JSON.stringify({type:'asr_start',sample_rate:V.asrSampleRate}));
-          }
-        },3000);
-      }
+      _dbg('ASR错误: '+(m.message||''));
+      // 服务端会自动重连（指数退避），恢复后回传 asr_ready，这里只提示状态
+      setStatus('语音识别中断，自动重连中…',true);
     }
     else if(m.type==='asr_text'){if(m.content)handleAsrText(m.content);}
     else if(m.type==='asr_partial'){

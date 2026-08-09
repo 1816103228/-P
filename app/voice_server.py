@@ -80,6 +80,11 @@ TTS_MAX_CONCURRENCY = 3
 TTS_CIRCUIT_FAILS = 2
 TTS_CIRCUIT_COOLDOWN = 60
 
+#: ASR 断线自动重连：初始延迟与最大退避（秒）。
+#: 阿里云实时识别是长连接 WebSocket，网络抖动会断开（心跳 PONG 超时），需要自动恢复
+ASR_RETRY_DELAY = 3.0
+ASR_RETRY_MAX = 20.0
+
 
 def _tts_circuit_open(state: dict) -> bool:
     return time.monotonic() < state.get("tts_open_until", 0.0)
@@ -512,6 +517,9 @@ async def voice(ws: WebSocket) -> None:
     generation: asyncio.Task | None = None
     loop = asyncio.get_running_loop()
     asr: DashScopeASR | None = None
+    asr_retry: asyncio.Task | None = None  # 断线自动重连监督任务
+    _asr_stopping = False
+    _audio_seen = False  # 是否收到过麦克风音频帧（诊断用）
 
     async def _on_asr_sentence(text: str) -> None:
         """ASR 识别出完整句子 → 回传前端（前端按用户输入处理）。"""
@@ -530,7 +538,7 @@ async def voice(ws: WebSocket) -> None:
             )
 
     async def _on_asr_error(code=None, message=None) -> None:
-        """ASR 识别流中途出错：置 None 允许前端重发 asr_start 重建实例并自动重试。"""
+        """ASR 识别流中途出错：置 None，由监督任务自动重连（指数退避）。"""
         nonlocal asr
         asr = None
         detail = f"{code}: {message}" if code else (message or "未知错误")
@@ -545,6 +553,42 @@ async def voice(ws: WebSocket) -> None:
                     ensure_ascii=False,
                 )
             )
+
+    async def _start_asr(sr: int) -> bool:
+        """创建并启动 DashScope ASR；成功回传 asr_ready。"""
+        nonlocal asr
+        try:
+            asr = DashScopeASR(
+                loop,
+                _on_asr_sentence,
+                on_partial=_on_asr_partial,
+                on_error=_on_asr_error,
+                sample_rate=sr,
+            )
+        except Exception as e:
+            asr = None
+            logger.exception("ASR 实例创建失败: %s", e)
+            return False
+        if asr.start():
+            logger.info("ASR 已启动 (sample_rate=%s)", sr)
+            with suppress(Exception):
+                await ws.send_text(json.dumps({"type": "asr_ready"}, ensure_ascii=False))
+            return True
+        asr = None
+        return False
+
+    async def _asr_supervisor(sr: int) -> None:
+        """ASR 断线后自动重连（指数退避 3s→20s），直到通话结束。"""
+        delay = ASR_RETRY_DELAY
+        while not _asr_stopping:
+            await asyncio.sleep(delay)
+            if _asr_stopping:
+                return
+            if asr is None:
+                ok = await _start_asr(sr)
+                delay = ASR_RETRY_DELAY if ok else min(delay * 2, ASR_RETRY_MAX)
+            else:
+                delay = ASR_RETRY_DELAY
 
     logger.info("语音通话已接通")
     generation = asyncio.create_task(_produce_greeting(ws, greeting))
@@ -561,51 +605,37 @@ async def voice(ws: WebSocket) -> None:
                     generation.cancel()
                 continue
             if mtype == "asr_start":
-                # 前端告知采集采样率 → 创建 DashScope 流式 ASR
-                if asr is None:
+                # 前端告知采集采样率 → 创建 DashScope 流式 ASR；
+                # 后续断线由 _asr_supervisor 自动重连，无需前端反复重发
+                if asr is None and (asr_retry is None or asr_retry.done()):
                     sr = int(msg.get("sample_rate") or config.ASR_SAMPLE_RATE)
-                    try:
-                        asr = DashScopeASR(
-                            loop,
-                            _on_asr_sentence,
-                            on_partial=_on_asr_partial,
-                            on_error=_on_asr_error,
-                            sample_rate=sr,
-                        )
-                    except Exception as e:
-                        asr = None
-                        logger.exception("ASR 实例创建失败")
-                        await ws.send_text(
-                            json.dumps(
-                                {"type": "asr_error", "message": f"语音识别初始化失败: {e}"},
-                                ensure_ascii=False,
-                            )
-                        )
-                        continue
-                    if asr.start():
-                        logger.info("ASR 已启动 (sample_rate=%s)", sr)
-                        await ws.send_text(json.dumps({"type": "asr_ready"}, ensure_ascii=False))
-                    else:
-                        # 启动失败：置 None 允许前端重发 asr_start 重试（如 DashScope 瞬时网络问题）
-                        asr = None
+                    ok = await _start_asr(sr)
+                    if not ok:
                         await ws.send_text(
                             json.dumps(
                                 {
                                     "type": "asr_error",
-                                    "message": "语音识别启动失败（检查 DASHSCOPE_API_KEY 与网络）",
+                                    "message": "语音识别启动失败，自动重试中…",
                                 },
                                 ensure_ascii=False,
                             )
                         )
+                    asr_retry = asyncio.create_task(_asr_supervisor(sr))
                 continue
             if mtype == "audio":
                 # 前端 PCM 音频帧 → ASR 流式识别
                 if asr is not None:
+                    if not _audio_seen:
+                        _audio_seen = True
+                        logger.info("收到麦克风音频帧（ASR 识别中）")
                     try:
                         data = base64.b64decode(msg.get("data") or "")
                         asr.send(data)
                     except Exception:
                         logger.exception("audio 帧处理失败")
+                elif not _audio_seen:
+                    _audio_seen = True
+                    logger.info("收到麦克风音频帧但 ASR 未就绪（自动重连中，稍候恢复）")
                 continue
             if mtype != "text":
                 continue
@@ -624,6 +654,9 @@ async def voice(ws: WebSocket) -> None:
     except WebSocketDisconnect:
         logger.info("语音通话已断开")
     finally:
+        _asr_stopping = True
+        if asr_retry is not None:
+            asr_retry.cancel()
         if generation is not None and not generation.done():
             generation.cancel()
         if asr is not None:
