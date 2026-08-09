@@ -7,6 +7,7 @@
     streamlit run app/ui/web.py
 或双击 scripts/start.bat（Windows）/ 运行 scripts/start.sh（macOS / Linux）。
 """
+
 import base64
 import html
 import logging
@@ -262,9 +263,7 @@ if "_force_mode" in st.session_state:
 
 
 def start_mock():
-    st.session_state.session = InterviewSession(
-        "mock", persona=st.session_state.get("persona", "")
-    )
+    st.session_state.session = InterviewSession("mock", persona=st.session_state.get("persona", ""))
     st.session_state.history = [("assistant", MOCK_GREETING)]
     st.session_state.mode = "模拟面试"
 
@@ -345,7 +344,9 @@ def custom_interview_dialog():
             if meta.get("lazy_fetched"):
                 note_lines.append(f"🔍 {meta.get('lazy', {}).get('detail') or '已补抓相关真题'}")
             if n_ai and n_ai == len(qs):
-                note_lines.append("⚠️ 本地题库暂无该岗位真题，以下题目为 **AI 生成（非真题）**，仅供参考。")
+                note_lines.append(
+                    "⚠️ 本地题库暂无该岗位真题，以下题目为 **AI 生成（非真题）**，仅供参考。"
+                )
             elif n_bank:
                 note_lines.append(f"📚 本批题目已参考本地题库 **{n_bank} 道真题** 生成。")
             note = "\n".join(note_lines)
@@ -377,7 +378,9 @@ def question_bank_dialog():
     with st.expander("➕ 添加自定义题"):
         cq_title = st.text_input("题干", key="cq_title", placeholder="如：如何设计一个限流组件？")
         cq_answer = st.text_area("参考答案（选填）", key="cq_answer", height=80)
-        cq_tags = st.text_input("标签（逗号分隔，选填）", key="cq_tags", placeholder="如：Redis,限流")
+        cq_tags = st.text_input(
+            "标签（逗号分隔，选填）", key="cq_tags", placeholder="如：Redis,限流"
+        )
         cq_diff = st.selectbox("难度", ["简单", "中等", "困难"], key="cq_diff")
         cq_company = st.text_input("公司（选填）", key="cq_company", placeholder="如：字节跳动")
         if st.button("添加题目", type="primary", use_container_width=True):
@@ -426,8 +429,7 @@ def question_bank_dialog():
                     st.error("没有可导入的题目，请检查 CSV 格式")
 
     src_items = [
-        (SOURCE_LABELS.get(r["source"], r["source"]), r["source"])
-        for r in db.count_by_source()
+        (SOURCE_LABELS.get(r["source"], r["source"]), r["source"]) for r in db.count_by_source()
     ]
     srcs = ["全部"] + [label for label, _ in src_items]
     src_key_by_label = {label: key for label, key in src_items}
@@ -517,33 +519,32 @@ def question_bank_dialog():
                 args=(r["id"],),
             )
     if right is not None:
-        with right:
-            with st.container(border=True):
-                st.markdown(f"**🎯 已选题目（{len(sel)}）**")
-                for i, s in enumerate(sel, 1):
-                    rc = st.columns([4, 1], vertical_alignment="center")
-                    rc[0].caption(f"{i}. {s['title'][:22]}")
-                    rc[1].button(
-                        "✕", key=f"qb_del_{s['id']}", on_click=_remove_selected, args=(s["id"],)
+        with right, st.container(border=True):
+            st.markdown(f"**🎯 已选题目（{len(sel)}）**")
+            for i, s in enumerate(sel, 1):
+                rc = st.columns([4, 1], vertical_alignment="center")
+                rc[0].caption(f"{i}. {s['title'][:22]}")
+                rc[1].button(
+                    "✕", key=f"qb_del_{s['id']}", on_click=_remove_selected, args=(s["id"],)
+                )
+            if st.button(
+                f"🚀 开始综合面试（{len(sel)} 题）", type="primary", use_container_width=True
+            ):
+                titles = [s["title"] for s in sel]
+                st.session_state.session = InterviewSession(
+                    "mock", questions=titles, job_title="综合练习"
+                )
+                st.session_state.history = [
+                    (
+                        "assistant",
+                        f"已为你挑选 **{len(titles)} 道题**进行综合面试，"
+                        "接下来由浅入深逐题提问。先做个 1 分钟自我介绍吧"
+                        "（姓名 / 经验 / 相关项目）😊",
                     )
-                if st.button(
-                    f"🚀 开始综合面试（{len(sel)} 题）", type="primary", use_container_width=True
-                ):
-                    titles = [s["title"] for s in sel]
-                    st.session_state.session = InterviewSession(
-                        "mock", questions=titles, job_title="综合练习"
-                    )
-                    st.session_state.history = [
-                        (
-                            "assistant",
-                            f"已为你挑选 **{len(titles)} 道题**进行综合面试，"
-                            "接下来由浅入深逐题提问。先做个 1 分钟自我介绍吧"
-                            "（姓名 / 经验 / 相关项目）😊",
-                        )
-                    ]
-                    st.session_state["_force_mode"] = "模拟面试"
-                    st.session_state.selected_questions = []
-                    st.rerun()
+                ]
+                st.session_state["_force_mode"] = "模拟面试"
+                st.session_state.selected_questions = []
+                st.rerun()
 
 
 # ---- 顶部：品牌（居中）----
@@ -584,6 +585,7 @@ if _custom_voice_ready:
 # 侧边栏：题库统计 + 浏览题库入口（与统计卡片整合在一起）
 render_sidebar(on_browse=question_bank_dialog)
 
+
 # ---- 欢迎区 / 聊天 ----
 def render_welcome():
     st.markdown(
@@ -606,9 +608,7 @@ def render_welcome():
             )
             if action:
                 # on_click 回调在渲染前执行，点击稳定生效
-                st.button(
-                    label, key=f"card_{title}", use_container_width=True, on_click=action
-                )
+                st.button(label, key=f"card_{title}", use_container_width=True, on_click=action)
             elif st.button(label, key=f"card_{title}", use_container_width=True):
                 custom_interview_dialog()
 

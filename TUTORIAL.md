@@ -105,8 +105,9 @@ DEEPSEEK_API_KEY=sk-你的key
 创建 Key → 复制出来填进去。
 
 > 可选：想让语音更自然、更稳定，可以再配一个阿里云 CosyVoice 的 Key
-> （<https://bailian.console.aliyun.com/> 获取），填到 `.env` 里并把 `VOICE_TTS=cosyvoice`。
-> 不配也能用，会走默认的 edge-tts。
+> （<https://bailian.console.aliyun.com/> 获取），填到 `.env` 里；这个 Key 同时用于
+> **语音识别（Paraformer）** 与 CosyVoice 音色（`VOICE_TTS=cosyvoice`）。不配置的话
+> 语音识别不可用，语音通话只能听不能说；TTS 仍可用默认的 edge-tts。
 
 ---
 
@@ -197,7 +198,8 @@ python -m streamlit run app/ui/web.py --server.headless true --server.port 8501
 5. 说「开始面试」自动切换成模拟面试；直接提问就是辅导答疑
 6. 想结束：点红色 **⏹ 挂断**
 
-> 语音识别请用 **Chrome 或 Edge**，别的浏览器可能没有识别功能。
+> 语音识别由服务端阿里云 Paraformer 完成（需在 `.env` 配置 `DASHSCOPE_API_KEY`）；
+> 浏览器请用 **Chrome 或 Edge**，别的浏览器可能不支持麦克风采集。
 
 ---
 

@@ -12,7 +12,7 @@ import hashlib
 import logging
 import re
 import sqlite3
-from contextlib import closing
+from contextlib import closing, suppress
 from datetime import datetime, timezone
 
 from app import config
@@ -309,6 +309,7 @@ def count_by_source() -> list[sqlite3.Row]:
 
 
 # ------------------------------------------------------------ 懒加载补抓记录
+
 
 def is_category_fetched(source: str, category: str) -> bool:
     """该数据源+分类是否已按需补抓过。"""
@@ -629,10 +630,8 @@ def _rebuild_fts() -> None:
     """重建 FTS5 索引（外部内容表 rowid 与主表错位时用于修复）。"""
     with closing(get_conn()) as conn, conn:
         for t in ("questions_fts", "questions_fts_tr"):
-            try:
+            with suppress(sqlite3.OperationalError):
                 conn.execute(f"INSERT INTO {t}({t}) VALUES('rebuild')")
-            except sqlite3.OperationalError:
-                pass
 
 
 def list_favorites(limit: int = 50) -> list[sqlite3.Row]:

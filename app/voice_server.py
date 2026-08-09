@@ -34,8 +34,6 @@ from pathlib import Path
 import requests
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-
-from app.asr_client import DashScopeASR
 from fastapi.responses import HTMLResponse
 from fastapi.staticfiles import StaticFiles
 
@@ -44,6 +42,7 @@ import app.voice_store as voice_store
 from app import config, prompts
 from app.agent import llm
 from app.agent.coach import InterviewSession
+from app.asr_client import DashScopeASR
 from app.scheduler import setup_logging
 
 try:
@@ -55,6 +54,14 @@ logger = logging.getLogger("voice_server")
 
 _END = object()  # 生成器结束哨兵（StopIteration 不能跨 asyncio.to_thread 传播）
 _SENT_END = re.compile(r"[。！？；\n.!?;]")
+
+#: 首条消息触发"模拟面试"的明确意图（不含"模拟面试是什么"这类提问）
+_MOCK_START_RE = re.compile(
+    r"开始面试"
+    r"|开始模拟面试"
+    r"|^(?:我(?:想|要))?模拟面试(?:吧|一下|下|了)?$"
+    r"|(?:我想|我要|来|做|进行|试试|开启|帮我|开始一[场次]).{0,4}模拟面试"
+)
 
 #: edge-tts 原始音频块非常小（约 0.13s/块），逐块推送会让浏览器频繁解码调度导致卡顿；
 #: 服务端聚合成 ~8KB（约 1.5-2s 语音）再推一块，既保持"边合成边播"，又大幅减少播放单元数。
@@ -69,28 +76,28 @@ TTS_CHUNK_CHARS = 90  # 后续块阈值：约 2-3 句
 TTS_MAX_CONCURRENCY = 3
 
 #: edge-tts 跨回复熔断：连续失败 N 次后暂停在线合成一段时间，直接降级本地语音（避免每次干等超时）
+#: 熔断状态放在每个连接的 state 字典里（每连接独立），避免一个连接的网络抖动拖累其他连接
 TTS_CIRCUIT_FAILS = 2
 TTS_CIRCUIT_COOLDOWN = 60
-_tts_circuit = {"fails": 0, "open_until": 0.0}
 
 
-def _tts_circuit_open() -> bool:
-    return time.monotonic() < _tts_circuit["open_until"]
+def _tts_circuit_open(state: dict) -> bool:
+    return time.monotonic() < state.get("tts_open_until", 0.0)
 
 
-def _tts_note_failure() -> None:
-    _tts_circuit["fails"] += 1
-    if _tts_circuit["fails"] >= TTS_CIRCUIT_FAILS:
-        _tts_circuit["open_until"] = time.monotonic() + TTS_CIRCUIT_COOLDOWN
+def _tts_note_failure(state: dict) -> None:
+    state["tts_fails"] = state.get("tts_fails", 0) + 1
+    if state["tts_fails"] >= TTS_CIRCUIT_FAILS:
+        state["tts_open_until"] = time.monotonic() + TTS_CIRCUIT_COOLDOWN
         logger.warning(
-            "edge-tts 连续失败 %s 次，熔断 %s 秒，期间直接使用浏览器本地语音",
+            "本连接 edge-tts 连续失败 %s 次，熔断 %s 秒，期间直接使用浏览器本地语音",
             TTS_CIRCUIT_FAILS,
             TTS_CIRCUIT_COOLDOWN,
         )
 
 
-def _tts_note_success() -> None:
-    _tts_circuit["fails"] = 0
+def _tts_note_success(state: dict) -> None:
+    state["tts_fails"] = 0
 
 
 @asynccontextmanager
@@ -114,11 +121,9 @@ app.mount(
 
 def maybe_switch_to_mock(session: InterviewSession, text: str) -> InterviewSession:
     """首条消息说"开始面试/模拟面试"时，从答疑模式切换到模拟面试模式。"""
-    if (
-        session.mode == "coach"
-        and len(session.messages) <= 1
-        and ("开始面试" in text or "模拟面试" in text)
-    ):
+    # 只匹配明确的"开始"意图，避免首条消息只是提问"模拟面试是什么"就误切换
+    match = _MOCK_START_RE.search(text)
+    if session.mode == "coach" and len(session.messages) <= 1 and match is not None:
         return InterviewSession("mock")
     return session
 
@@ -264,14 +269,17 @@ async def _synthesize(ws: WebSocket, state: dict, sentence: str) -> bool:
 
     async def _try_once() -> tuple[bool, bool]:
         """尝试一次在线合成，返回 (是否已推送过音频, 是否完整成功)。"""
-        if config.VOICE_TTS == "cosyvoice":
+        if config.VOICE_TTS == "cosyvoice" and state.get("tts_voice") != "edge":
             audio = await _cosyvoice_synthesize(sentence)
             if audio:
+                state["tts_voice"] = "cosyvoice"
                 # CosyVoice 一次返回整段音频，作为一个播放单元推送
                 await _flush([audio], sentence)
                 return True, True
-            # CosyVoice 不可用（欠费/配额/网络）→ 回退 edge-tts，避免直接降级本地机械音
-            logger.warning("CosyVoice 不可用，回退 edge-tts")
+            # CosyVoice 不可用（欠费/配额/网络）→ 本回复后续段落统一用 edge-tts，
+            # 避免同一条回复里混两种音色（听起来像"两个声音"）
+            state["tts_voice"] = "edge"
+            logger.warning("CosyVoice 不可用，本回复后续段落降级 edge-tts 保持音色一致")
         if edge_tts is None:
             return False, False
         comm = edge_tts.Communicate(
@@ -308,7 +316,9 @@ async def _synthesize(ws: WebSocket, state: dict, sentence: str) -> bool:
             return sent, False
 
     try:
-        if config.VOICE_TTS not in ("edge", "cosyvoice") or _tts_circuit_open():
+        state.setdefault("tts_fails", 0)
+        state.setdefault("tts_open_until", 0.0)
+        if config.VOICE_TTS not in ("edge", "cosyvoice") or _tts_circuit_open(state):
             await _send_fail()
             return False
         if config.VOICE_TTS == "cosyvoice" and not config.DASHSCOPE_API_KEY:
@@ -319,9 +329,9 @@ async def _synthesize(ws: WebSocket, state: dict, sentence: str) -> bool:
             # 连接级失败且完全没出音频：重试一次（edge-tts 多为瞬时连接失败）
             sent_any, ok = await _try_once()
         if ok:
-            _tts_note_success()
+            _tts_note_success(state)
             return True
-        _tts_note_failure()
+        _tts_note_failure(state)
         if not sent_any:
             with suppress(Exception):
                 await _send_fail()
@@ -330,7 +340,7 @@ async def _synthesize(ws: WebSocket, state: dict, sentence: str) -> bool:
         raise
     except Exception:
         logger.exception("TTS 处理异常（sentence=%s）", sentence[:30])
-        _tts_note_failure()
+        _tts_note_failure(state)
         with suppress(Exception):
             await _send_fail()
         return False
@@ -430,21 +440,17 @@ async def _produce_greeting(ws: WebSocket, greeting: str = prompts.VOICE_GREETIN
     if rest.strip():
         sentences.append(rest.strip())
     state = {"sid": 0}
-    tasks: list[asyncio.Task] = []
     try:
         await ws.send_text(json.dumps({"type": "reply_start", "first_sid": 1}))
-        # 文本逐句展示，音频逐句并行合成：首句 1-3 秒即可出声，避免接通后长时间沉默
+        # 文本逐句展示；语音整段一次合成：同一句开场白只有一个音色，
+        # 不会出现"前一句 CosyVoice、后一句 edge-tts"的两种声音
         for s in sentences:
             if not s.strip():
                 continue
             await ws.send_text(json.dumps({"type": "delta", "content": s}, ensure_ascii=False))
-            tasks.append(asyncio.create_task(_synthesize(ws, state, s)))
-        if tasks:
-            await asyncio.gather(*tasks)
+        await _synthesize(ws, state, greeting.strip())
         await ws.send_text(json.dumps({"type": "done"}))
     except asyncio.CancelledError:
-        for t in tasks:
-            t.cancel()
         logger.info("开场白被用户打断")
         with suppress(Exception):
             await ws.send_text(json.dumps({"type": "cancelled"}))
@@ -471,8 +477,17 @@ def _clear_custom_when_finished(session: InterviewSession) -> None:
         voice_store.clear_custom_interview()
 
 
+#: 挂断/断线后保留会话，重连时继续上一轮对话（单用户本地场景）
+_last_session: InterviewSession | None = None
+
+REOPEN_GREETING = (
+    "欢迎回来，我们继续刚才的对话。你可以直接提问，也可以说“开始面试”开始一场新的模拟面试。"
+)
+
+
 @app.websocket("/ws/voice")
 async def voice(ws: WebSocket) -> None:
+    global _last_session
     await ws.accept()
     custom = voice_store.load_custom_interview()
     if custom:
@@ -484,10 +499,16 @@ async def voice(ws: WebSocket) -> None:
             jd=custom.get("jd", ""),
         )
         greeting = _build_custom_greeting(custom)
+        _last_session = session
+    elif _last_session is not None and not _last_session.finished:
+        # 上次通话未结束（模拟面试进行中/辅导答疑）→ 接着聊，不重新开场
+        session = _last_session
+        greeting = REOPEN_GREETING
     else:
         # 默认辅导答疑；首条说"开始面试"则切换模拟面试
         session = InterviewSession("coach")
         greeting = prompts.VOICE_GREETING
+        _last_session = session
     generation: asyncio.Task | None = None
     loop = asyncio.get_running_loop()
     asr: DashScopeASR | None = None
@@ -500,6 +521,30 @@ async def voice(ws: WebSocket) -> None:
             )
         except Exception:
             logger.debug("asr_text 发送失败（连接可能已断开）")
+
+    async def _on_asr_partial(text: str) -> None:
+        """ASR 中间结果 → 回传前端，用于"开口即打断"（不等整句识别完）。"""
+        with suppress(Exception):
+            await ws.send_text(
+                json.dumps({"type": "asr_partial", "content": text}, ensure_ascii=False)
+            )
+
+    async def _on_asr_error(code=None, message=None) -> None:
+        """ASR 识别流中途出错：置 None 允许前端重发 asr_start 重建实例并自动重试。"""
+        nonlocal asr
+        asr = None
+        detail = f"{code}: {message}" if code else (message or "未知错误")
+        logger.warning("ASR 识别流中断: %s", detail)
+        with suppress(Exception):
+            await ws.send_text(
+                json.dumps(
+                    {
+                        "type": "asr_error",
+                        "message": f"语音识别中断（{detail}），正在自动重试…",
+                    },
+                    ensure_ascii=False,
+                )
+            )
 
     logger.info("语音通话已接通")
     generation = asyncio.create_task(_produce_greeting(ws, greeting))
@@ -519,13 +564,38 @@ async def voice(ws: WebSocket) -> None:
                 # 前端告知采集采样率 → 创建 DashScope 流式 ASR
                 if asr is None:
                     sr = int(msg.get("sample_rate") or config.ASR_SAMPLE_RATE)
-                    asr = DashScopeASR(loop, _on_asr_sentence, sample_rate=sr)
+                    try:
+                        asr = DashScopeASR(
+                            loop,
+                            _on_asr_sentence,
+                            on_partial=_on_asr_partial,
+                            on_error=_on_asr_error,
+                            sample_rate=sr,
+                        )
+                    except Exception as e:
+                        asr = None
+                        logger.exception("ASR 实例创建失败")
+                        await ws.send_text(
+                            json.dumps(
+                                {"type": "asr_error", "message": f"语音识别初始化失败: {e}"},
+                                ensure_ascii=False,
+                            )
+                        )
+                        continue
                     if asr.start():
                         logger.info("ASR 已启动 (sample_rate=%s)", sr)
                         await ws.send_text(json.dumps({"type": "asr_ready"}, ensure_ascii=False))
                     else:
+                        # 启动失败：置 None 允许前端重发 asr_start 重试（如 DashScope 瞬时网络问题）
+                        asr = None
                         await ws.send_text(
-                            json.dumps({"type": "asr_error", "message": "语音识别启动失败"}, ensure_ascii=False)
+                            json.dumps(
+                                {
+                                    "type": "asr_error",
+                                    "message": "语音识别启动失败（检查 DASHSCOPE_API_KEY 与网络）",
+                                },
+                                ensure_ascii=False,
+                            )
                         )
                 continue
             if mtype == "audio":
@@ -543,6 +613,7 @@ async def voice(ws: WebSocket) -> None:
             if not text:
                 continue
             session = maybe_switch_to_mock(session, text)
+            _last_session = session
             # 用户开口 → 取消上一轮未完成的生成（barge-in）
             if generation is not None and not generation.done():
                 generation.cancel()

@@ -6,6 +6,7 @@
 注意：设置 DISABLE_SCHEDULER=1 避免 AppTest 触发真实后台爬虫；
 数据类测试在空库时自动跳过（先跑爬虫抓取）。
 """
+
 import os
 import tempfile
 import unittest
@@ -191,8 +192,6 @@ class BankFeatureDbTests(unittest.TestCase):
         rows = db.search_questions(company="字节跳动")
         self.assertTrue(any(r["title"] == "字节后端面试题" for r in rows))
         self.assertEqual(db.search_questions(company="不存在的公司"), [])
-
-
 
 
 class UITest(unittest.TestCase):

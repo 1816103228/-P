@@ -1,4 +1,5 @@
 """共享 UI 组件：小P 虚拟人物头像、侧边栏题库统计（供 main.py 使用）。"""
+
 import streamlit as st
 
 import app.db as db
@@ -89,7 +90,10 @@ def render_sidebar(on_browse=None) -> None:
         _render_review()
         st.divider()
         st.markdown('<div class="side-note">📅 题库每日自动更新</div>', unsafe_allow_html=True)
-        st.markdown('<div class="side-note">📞 右下角语音通话（Chrome / Edge）</div>', unsafe_allow_html=True)
+        st.markdown(
+            '<div class="side-note">📞 右下角语音通话（Chrome / Edge）</div>',
+            unsafe_allow_html=True,
+        )
 
 
 def _render_review() -> None:

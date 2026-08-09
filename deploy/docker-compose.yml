@@ -22,6 +22,7 @@ services:
       - "8765:8765"
     environment:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
+      DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
       VOICE_HOST: 0.0.0.0
       VOICE_PORT: 8765
     volumes:

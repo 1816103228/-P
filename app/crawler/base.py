@@ -55,3 +55,4 @@ class SourceAdapter(ABC):
 
     def after_store(self, rows: list[dict]) -> None:
         """入库后的补全钩子（如写回详情答案），默认不做。子类可覆盖。"""
+        return None

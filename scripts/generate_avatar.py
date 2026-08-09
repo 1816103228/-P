@@ -7,9 +7,8 @@
 密钥从项目 .env 读取（DASHSCOPE_API_KEY）。模型按 wan2.6 同步 → wan2.2 异步 → wanx-v1 异步
 依次尝试，任意一个成功即保存并退出。
 """
+
 import argparse
-import base64
-import json
 import sys
 import time
 from pathlib import Path
@@ -47,7 +46,7 @@ def _save(url: str, out: Path) -> bool:
     r.raise_for_status()
     out.parent.mkdir(parents=True, exist_ok=True)
     out.write_bytes(r.content)
-    print(f"已保存: {out}（{len(r.content)//1024} KB）")
+    print(f"已保存: {out}（{len(r.content) // 1024} KB）")
     return True
 
 

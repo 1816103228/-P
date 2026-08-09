@@ -18,7 +18,9 @@ MIANSHIYA_ROW = """
 </tbody></table>
 """
 
-HOT_HTML = '<a href="/question/999">1. 什么是 AI Agent？它和直接调用大模型 API 有什么区别？3.2k热度</a>'
+HOT_HTML = (
+    '<a href="/question/999">1. 什么是 AI Agent？它和直接调用大模型 API 有什么区别？3.2k热度</a>'
+)
 
 DETAIL_HTML = """
 <h1>42. 谈谈 Python 的 GIL</h1>

@@ -12,9 +12,18 @@
 
 import asyncio
 import logging
+from contextlib import suppress
 
-import dashscope
-from dashscope.audio.asr import Recognition, RecognitionCallback
+try:
+    import dashscope
+    from dashscope.audio.asr import Recognition, RecognitionCallback
+
+    _DASHSCOPE_AVAILABLE = True
+except ImportError:  # 未安装 dashscope 时降级：仅 ASR 不可用，语音服务仍可启动（TTS/对话正常）
+    dashscope = None
+    Recognition = None
+    RecognitionCallback = object
+    _DASHSCOPE_AVAILABLE = False
 
 from app import config
 
@@ -22,11 +31,19 @@ logger = logging.getLogger("interview_coach.asr")
 
 
 class _AsrCallback(RecognitionCallback):
-    """SDK 回调：句子结束的识别文本桥接到 asyncio。"""
+    """SDK 回调：句子结束/中间结果的识别文本、错误事件桥接到 asyncio。"""
 
-    def __init__(self, loop: asyncio.AbstractEventLoop, on_sentence) -> None:
+    def __init__(
+        self,
+        loop: asyncio.AbstractEventLoop,
+        on_sentence,
+        on_partial=None,
+        on_error=None,
+    ) -> None:
         self._loop = loop
-        self._on_sentence = on_sentence  # async callable(text)
+        self._on_sentence = on_sentence  # async callable(text)：句子结束
+        self._on_partial = on_partial  # async callable(text)：中间结果（供提前打断）
+        self._on_error = on_error  # async callable(code, message)
 
     def on_event(self, result) -> None:
         try:
@@ -40,18 +57,25 @@ class _AsrCallback(RecognitionCallback):
         except Exception:
             is_end = True
         text = (sentence.get("text") or "").strip() if isinstance(sentence, dict) else ""
-        if is_end and text and self._on_sentence is not None:
+        if not text:
+            return
+        if is_end and self._on_sentence is not None:
             try:
                 asyncio.run_coroutine_threadsafe(self._on_sentence(text), self._loop)
             except RuntimeError:
                 logger.warning("事件循环已关闭，丢弃识别结果: %s", text[:20])
+        elif not is_end and self._on_partial is not None:
+            # 中间结果：前端据此在用户开口时立即打断，不等整句识别完成
+            with suppress(RuntimeError):
+                asyncio.run_coroutine_threadsafe(self._on_partial(text), self._loop)
 
     def on_error(self, result) -> None:
-        logger.warning(
-            "ASR 识别错误: code=%s message=%s",
-            getattr(result, "code", None),
-            getattr(result, "message", None),
-        )
+        code = getattr(result, "code", None)
+        message = getattr(result, "message", None)
+        logger.warning("ASR 识别错误: code=%s message=%s", code, message)
+        if self._on_error is not None:
+            with suppress(RuntimeError):
+                asyncio.run_coroutine_threadsafe(self._on_error(code, message), self._loop)
 
 
 class DashScopeASR:
@@ -61,22 +85,30 @@ class DashScopeASR:
         self,
         loop: asyncio.AbstractEventLoop,
         on_sentence,
+        on_partial=None,
+        on_error=None,
         sample_rate: int | None = None,
         model: str | None = None,
     ) -> None:
         self._loop = loop
+        self._rec = None
+        self._started = False
+        if not _DASHSCOPE_AVAILABLE:
+            return
         dashscope.api_key = config.DASHSCOPE_API_KEY
         self._rec = Recognition(
             model=model or config.ASR_MODEL,
-            callback=_AsrCallback(loop, on_sentence),
+            callback=_AsrCallback(loop, on_sentence, on_partial, on_error),
             format="pcm",
             sample_rate=sample_rate or config.ASR_SAMPLE_RATE,
             language_hints=["zh"],
         )
-        self._started = False
 
     def start(self) -> bool:
         """启动识别。失败返回 False（不阻断通话，仅提示）。"""
+        if self._rec is None:
+            logger.warning("未安装 dashscope 依赖，语音识别不可用（pip install dashscope 后重启）")
+            return False
         if not config.DASHSCOPE_API_KEY:
             logger.warning("未配置 DASHSCOPE_API_KEY，语音识别不可用")
             return False
@@ -98,7 +130,7 @@ class DashScopeASR:
 
     def stop(self) -> None:
         """停止识别并释放连接。"""
-        if not self._started:
+        if self._rec is None or not self._started:
             return
         try:
             self._rec.stop()

@@ -1,4 +1,5 @@
 """教练层状态机测试：完整模拟面试流程 + 流式输出（mock LLM，不触网）。"""
+
 import tempfile
 import unittest
 from pathlib import Path
@@ -31,14 +32,16 @@ class CoachFlowTests(unittest.TestCase):
 
     def test_full_mock_interview_flow(self):
         s = InterviewSession("mock")
-        with mock.patch("app.agent.coach._pick_question", return_value=FAKE_QUESTION), \
-             mock.patch("app.agent.coach.llm.chat", return_value="小P回复"):
+        with (
+            mock.patch("app.agent.coach._pick_question", return_value=FAKE_QUESTION),
+            mock.patch("app.agent.coach.llm.chat", return_value="小P回复"),
+        ):
             s.handle("自我介绍：我是张三，3年后端")
             self.assertEqual(s.turn, "answering")
             self.assertEqual(s.stage_idx, 0)
             for i in range(6):
                 s.handle("我的回答")
-                self.assertEqual(s.turn, "followup", f"第{i+1}题后应进入追问")
+                self.assertEqual(s.turn, "followup", f"第{i + 1}题后应进入追问")
                 s.handle(LONG_ANSWER)
                 if i < 5:
                     self.assertEqual(s.stage_idx, i + 1)
@@ -53,31 +56,66 @@ class CoachFlowTests(unittest.TestCase):
 
     def test_coach_mode_rag(self):
         s = InterviewSession("coach")
-        with mock.patch("app.agent.coach.db.fts_search", return_value=[]), \
-             mock.patch("app.agent.coach.llm.chat", return_value="标准参考回答…"):
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch("app.agent.coach.llm.chat", return_value="标准参考回答…"),
+        ):
             reply = s.handle("Redis 缓存穿透怎么答")
         self.assertIn("标准参考回答", reply)
         self.assertEqual(s.mode, "coach")
 
     def test_handle_stream_yields_text(self):
         s = InterviewSession("coach")
-        with mock.patch("app.agent.coach.db.fts_search", return_value=[]), \
-             mock.patch("app.agent.coach.llm.chat_stream", return_value=iter(["标", "准", "答", "案"])):
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch(
+                "app.agent.coach.llm.chat_stream", return_value=iter(["标", "准", "答", "案"])
+            ),
+        ):
             text = "".join(s.handle_stream("怎么答"))
         self.assertEqual(text, "标准答案")
         self.assertEqual(s.messages[-1]["role"], "assistant")
 
+    def test_stream_abandon_mid_question_keeps_state_consistent(self):
+        """语音 barge-in：出题流中途放弃后，状态已提交，下一句按本题回答路由而非追问回答。"""
+        s = InterviewSession("mock", questions=["Q1", "Q2"])
+
+        def fake_stream(messages, **kwargs):
+            yield "（mock）"
+
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch("app.agent.coach.llm.chat_stream", side_effect=fake_stream),
+        ):
+            list(s.handle_stream("自我介绍：我是张三，3年后端"))  # 第一题
+            list(s.handle_stream("第一题的回答"))  # 点评+追问（提交 turn=followup）
+            # 追问回答触发进入下一题：出题流中途放弃（模拟用户打断）
+            g = s.handle_stream(LONG_ANSWER)
+            for _ in g:
+                break
+            self.assertEqual(s.turn, "answering", "出题前应已提交 answering 状态")
+            self.assertEqual(s.stage_idx, 1)
+            self.assertEqual(s.current_q["title"], "Q2")
+            # 用户随后说出对第 2 题的回答 → 应被记录为第 2 题答案
+            list(s.handle_stream("第二题的回答"))
+        self.assertEqual(s.turn, "followup")
+        self.assertEqual([a["stage"] for a in s.answers], ["定制题 1", "定制题 2"])
+
     def test_input_truncated(self):
         s = InterviewSession("coach")
         long_text = "x" * 5000
-        with mock.patch("app.agent.coach.db.fts_search", return_value=[]), \
-             mock.patch("app.agent.coach.llm.chat", return_value="ok"):
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch("app.agent.coach.llm.chat", return_value="ok"),
+        ):
             s.handle(long_text)
         self.assertLessEqual(len(s.messages[-2]["content"]), 4000)
 
     def test_custom_questions_flow(self):
         """定制题：按给定题目逐题推进，答完所有定制题后出报告。"""
-        s = InterviewSession("mock", questions=["Q1", "Q2"], job_title="高级 Python 后端", jd="精通 FastAPI")
+        s = InterviewSession(
+            "mock", questions=["Q1", "Q2"], job_title="高级 Python 后端", jd="精通 FastAPI"
+        )
         with mock.patch("app.agent.coach.llm.chat", return_value="小P回复"):
             s.handle("自我介绍：我是张三")
             self.assertEqual(s.current_q["title"], "Q1")
@@ -163,6 +201,7 @@ class CoachFlowTests(unittest.TestCase):
             s.handle("我的回答")
             s.handle(LONG_ANSWER)
         self.assertEqual(report_kwargs.get("model"), "deepseek-reasoner")
+
 
 if __name__ == "__main__":
     unittest.main()

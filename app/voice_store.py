@@ -3,9 +3,11 @@
 文字版生成定制面试题后写入，语音服务接通时读取并按该题目开始模拟面试；
 可通过 clear_custom_interview() 清除（生成新的会覆盖旧值）。
 """
+
 import json
 import os
 import time
+from contextlib import suppress
 
 import app.config as config
 
@@ -39,7 +41,5 @@ def load_custom_interview() -> dict | None:
 
 def clear_custom_interview() -> None:
     """清除已保存的定制面试（语音面试完成或用户取消时调用）。"""
-    try:
+    with suppress(OSError):
         _CUSTOM_FILE.unlink(missing_ok=True)
-    except OSError:
-        pass

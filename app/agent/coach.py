@@ -171,12 +171,16 @@ class InterviewSession:
 
     # ------------------------------------------------------------ LLM 调用
 
-    def _chat(self, max_tokens: int = 2048, temperature: float = 0.7, model: str | None = None) -> str:
+    def _chat(
+        self, max_tokens: int = 2048, temperature: float = 0.7, model: str | None = None
+    ) -> str:
         """统一的同步 LLM 调用（先压缩上下文）。"""
         self._maybe_compact()
         return llm.chat(self.messages, max_tokens=max_tokens, temperature=temperature, model=model)
 
-    def _chat_stream(self, max_tokens: int = 2048, temperature: float = 0.7, model: str | None = None):
+    def _chat_stream(
+        self, max_tokens: int = 2048, temperature: float = 0.7, model: str | None = None
+    ):
         """统一的流式 LLM 调用（先压缩上下文），返回增量迭代器。"""
         self._maybe_compact()
         return llm.chat_stream(
@@ -244,13 +248,16 @@ class InterviewSession:
         relevant = db.fts_search(keyword=user_text, limit=5)
         rag_block = self._build_rag_block(relevant)
         self.messages.append({"role": "user", "content": rag_block + user_text})
-        chunks: list[str] = []
-        for delta in self._chat_stream():
-            chunks.append(delta)
+        stream = self._chat_stream()
+        # 先把 assistant 占位消息写进历史并逐段追加：流被中途打断（语音 barge-in）时，
+        # 对话历史仍是"用户消息 + 部分回复"的连贯状态，不会留下悬空的指令
+        self.messages.append({"role": "assistant", "content": ""})
+        msg = self.messages[-1]
+        for delta in stream:
+            msg["content"] += delta
             yield delta
-        reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
-        self.messages.append({"role": "assistant", "content": reply})
-        return reply
+        msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
+        return msg["content"]
 
     # ------------------------------------------------------------ 模拟面试
 
@@ -334,15 +341,17 @@ class InterviewSession:
                     "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。",
                 }
             )
-            chunks: list[str] = []
-            for delta in self._chat_stream():
-                chunks.append(delta)
-                yield delta
-            reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
-            self.messages.append({"role": "assistant", "content": reply})
+            # 先提交状态再流式：即使被语音打断（barge-in），下一句也会正确按"追问回答"路由
             self.followup_count = 1
             self.turn = "followup"
-            return reply
+            stream = self._chat_stream()
+            self.messages.append({"role": "assistant", "content": ""})
+            msg = self.messages[-1]
+            for delta in stream:
+                msg["content"] += delta
+                yield delta
+            msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
+            return msg["content"]
 
         if self.turn == "followup":
             self.messages.append({"role": "user", "content": f"（追问的回答）{user_text}"})
@@ -355,13 +364,14 @@ class InterviewSession:
                         "再追问 1 个更具体的问题（引用用户原话）。",
                     }
                 )
-                chunks: list[str] = []
-                for delta in self._chat_stream():
-                    chunks.append(delta)
+                stream = self._chat_stream()
+                self.messages.append({"role": "assistant", "content": ""})
+                msg = self.messages[-1]
+                for delta in stream:
+                    msg["content"] += delta
                     yield delta
-                reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
-                self.messages.append({"role": "assistant", "content": reply})
-                return reply
+                msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
+                return msg["content"]
             self.followup_count = 0
             self.stage_idx += 1
             if self.stage_idx >= self._total_questions():
@@ -437,14 +447,16 @@ class InterviewSession:
                 ),
             }
         )
-        chunks: list[str] = []
-        for delta in self._chat_stream():
-            chunks.append(delta)
-            yield delta
-        reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
-        self.messages.append({"role": "assistant", "content": reply})
+        # 先提交"正在出题"状态：题目播报中途被用户打断时，下一句会按本题回答处理
         self.turn = "answering"
-        return reply
+        stream = self._chat_stream()
+        self.messages.append({"role": "assistant", "content": ""})
+        msg = self.messages[-1]
+        for delta in stream:
+            msg["content"] += delta
+            yield delta
+        msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
+        return msg["content"]
 
     def _finish_report(self) -> str:
         self.turn = "report"
@@ -489,14 +501,15 @@ class InterviewSession:
                 ),
             }
         )
-        chunks: list[str] = []
-        for delta in self._chat_stream(max_tokens=3000, model=config.REPORT_MODEL or None):
-            chunks.append(delta)
+        stream = self._chat_stream(max_tokens=3000, model=config.REPORT_MODEL or None)
+        self.messages.append({"role": "assistant", "content": ""})
+        msg = self.messages[-1]
+        for delta in stream:
+            msg["content"] += delta
             yield delta
-        reply = "".join(chunks).strip() or NO_REPLY_FALLBACK
-        self.messages.append({"role": "assistant", "content": reply})
-        self._persist_report(reply)
-        return reply
+        msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
+        self._persist_report(msg["content"])
+        return msg["content"]
 
     def _persist_report(self, report: str) -> None:
         """把本轮问答与报告落库，供侧边栏「面试复盘」展示；失败仅记日志不影响对话。"""

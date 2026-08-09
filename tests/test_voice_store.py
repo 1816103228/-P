@@ -1,4 +1,5 @@
 """voice_store：文字版/语音版共享的定制面试状态（临时文件，不触网）。"""
+
 import tempfile
 import unittest
 from pathlib import Path

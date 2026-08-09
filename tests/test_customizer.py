@@ -1,4 +1,5 @@
 """定制面试 Agent 测试：技术栈提取 + 题库检索 + 题目生成（mock LLM，不触网）。"""
+
 import unittest
 from unittest import mock
 
@@ -19,9 +20,7 @@ class CustomizerTests(unittest.TestCase):
         self.assertEqual(kw, ["Redis", "高并发", "MySQL"])
 
     def test_extract_tech_stack_fallback_on_error(self):
-        with mock.patch(
-            "app.agent.customizer.llm.chat", side_effect=RuntimeError("boom")
-        ):
+        with mock.patch("app.agent.customizer.llm.chat", side_effect=RuntimeError("boom")):
             kw = customizer.extract_tech_stack("Python 后端工程师", "熟悉 FastAPI")
         self.assertTrue(kw, "失败时应回退到关键词拆分")
 
@@ -125,14 +124,20 @@ class CustomizerTests(unittest.TestCase):
         bank_results = iter([[], [_row("Vue 组件通信", "中等")]])
         with (
             mock.patch("app.agent.customizer.llm.chat", side_effect=fake_chat),
-            mock.patch("app.agent.customizer.db.fts_search", side_effect=lambda kw, limit=5: next(bank_results)),
+            mock.patch(
+                "app.agent.customizer.db.fts_search",
+                side_effect=lambda kw, limit=5: next(bank_results),
+            ),
             mock.patch(
                 "app.agent.customizer.lazy.backfill_for_job",
-                side_effect=lambda *a, **kw: called.append("backfill") or {
-                    "attempted": 1,
-                    "new": 12,
-                    "detail": "已补抓「前端」真题 12 道",
-                },
+                side_effect=lambda *a, **kw: (
+                    called.append("backfill")
+                    or {
+                        "attempted": 1,
+                        "new": 12,
+                        "detail": "已补抓「前端」真题 12 道",
+                    }
+                ),
             ),
         ):
             qs, meta = customizer.generate_interview_questions_with_meta("前端开发", "Vue")

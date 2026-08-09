@@ -3,10 +3,11 @@
 轻量函数管线（非独立服务/进程）：文字版与语音版共用同一入口，
 一处升级两边同时生效。入口保持 generate_interview_questions(job_title, jd)。
 """
+
 import json
 import logging
 import re
-from typing import Callable
+from collections.abc import Callable
 
 import app.db as db
 from app.agent import llm
@@ -156,7 +157,9 @@ def generate_interview_questions_with_meta(
     if bank_hits:
         bank_note = f"本地题库中可参考的真题（可选用或改写，不要照搬编号）：\n{bank_block}"
     else:
-        bank_note = "本地题库暂无该岗位的真题，请凭专业知识生成贴近该岗位的题目（属于 AI 生成，非真题）。"
+        bank_note = (
+            "本地题库暂无该岗位的真题，请凭专业知识生成贴近该岗位的题目（属于 AI 生成，非真题）。"
+        )
     prompt = (
         "你是资深技术面试官，正在为一轮真实的岗位面试出题。\n"
         f"目标岗位：{job_title or '未指定（按通用后端开发）'}\n"

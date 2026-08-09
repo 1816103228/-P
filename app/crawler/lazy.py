@@ -124,7 +124,9 @@ def backfill_for_job(
         fetched_labels.append(label)
 
     if result["new"]:
-        result["detail"] = "已补抓「" + "、".join(fetched_labels) + "」真题 " + str(result["new"]) + " 道"
+        result["detail"] = (
+            "已补抓「" + "、".join(fetched_labels) + "」真题 " + str(result["new"]) + " 道"
+        )
     else:
         result["detail"] = "未抓到该岗位对应的题库真题"
     return result

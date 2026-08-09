@@ -46,10 +46,18 @@ VOICE_PORT = int(os.getenv("VOICE_PORT", "8765"))
 VOICE_NAME = os.getenv("VOICE_NAME", "zh-CN-XiaoxiaoNeural").strip()
 VOICE_RATE = os.getenv("VOICE_RATE", "+0%").strip()
 VOICE_PITCH = os.getenv("VOICE_PITCH", "+2Hz").strip()
-VOICE_VAD_THRESHOLD = float(os.getenv("VOICE_VAD_THRESHOLD", "0.08"))  # 打断音量阈值（越高越不易误触发）
-VOICE_VAD_HITS = int(os.getenv("VOICE_VAD_HITS", "5"))  # 连续超阈值帧数（每帧约60ms），需持续说话才打断
-VOICE_VAD_QUIET_FRAMES = int(os.getenv("VOICE_VAD_QUIET_FRAMES", "3"))  # 武装前需安静的帧数（防自己话尾误打断）
-VOICE_VAD_NOISE_MARGIN = float(os.getenv("VOICE_VAD_NOISE_MARGIN", "1.6"))  # 自适应阈值 = 环境底噪 × 系数
+VOICE_VAD_THRESHOLD = float(
+    os.getenv("VOICE_VAD_THRESHOLD", "0.08")
+)  # 打断音量阈值（越高越不易误触发）
+VOICE_VAD_HITS = int(
+    os.getenv("VOICE_VAD_HITS", "5")
+)  # 连续超阈值帧数（每帧约60ms），需持续说话才打断
+VOICE_VAD_QUIET_FRAMES = int(
+    os.getenv("VOICE_VAD_QUIET_FRAMES", "3")
+)  # 武装前需安静的帧数（防自己话尾误打断）
+VOICE_VAD_NOISE_MARGIN = float(
+    os.getenv("VOICE_VAD_NOISE_MARGIN", "1.6")
+)  # 自适应阈值 = 环境底噪 × 系数
 VOICE_TTS = (
     os.getenv("VOICE_TTS", "edge").strip().lower()
 )  # edge=微软edge-tts在线神经语音 / cosyvoice=阿里云百炼CosyVoice / local=浏览器本地语音
