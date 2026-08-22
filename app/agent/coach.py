@@ -84,6 +84,31 @@ def _sanitize_input(text: str) -> str:
     return (text or "").strip()[:MAX_INPUT_CHARS]
 
 
+def _ensure_reference_answer(row) -> str | None:
+    """确保当前题有参考答案：已有直接用；mianshiya 题缺答案则同步抓一次详情补全。
+
+    作为后台追答案的兜底：异步没赶上时，点评环节对当前这一道题同步补，
+    保证点评/追问有标准参考答案可参考。非 mianshiya 题或补不到则返回 None。
+    """
+    if not row:
+        return None
+    answer = row.get("answer") or ""
+    if answer:
+        return answer
+    if row.get("source") == "mianshiya" and row.get("source_id") and row.get("id"):
+        try:
+            from app.crawler.mianshiya import MianShiYaAdapter
+
+            stats = MianShiYaAdapter().fetch_details_for([str(row["source_id"])])
+            if stats.get("updated"):
+                fresh = db.get_question_by_id(row["id"])
+                if fresh and fresh["answer"]:
+                    return fresh["answer"]
+        except Exception:
+            logger.exception("点评兜底补答案失败（当前题 %s）", row.get("source_id"))
+    return None
+
+
 def _pick_question(
     stage_tags: list[str],
     source: str | None,
@@ -127,6 +152,10 @@ class InterviewSession:
         self.persona = persona
         self.started_at = datetime.now(timezone.utc).isoformat()
         self.followup_count = 0  # 当前题已追问次数（深度感知追问）
+        self.session_id: int | None = None  # 多用户持久化：对应 sessions 表行 id
+        # 干净的展示历史（前端渲染用，与 LLM 内部 messages 分离）：
+        # 由调用方（REST/WS 层）维护，start 时放欢迎语，每回合追加用户原文与助手回复。
+        self.display_history: list[list] = []
 
         rules = prompts.MOCK_RULES if mode == "mock" else prompts.COACH_RULES
         persona_block = f"\n\n【本轮面试官】{persona}" if persona else ""
@@ -140,6 +169,63 @@ class InterviewSession:
         self.messages = [
             {"role": "system", "content": prompts.ROLE + persona_block + "\n" + rules + extra}
         ]
+
+    # ------------------------------------------------------------ 持久化（多用户）
+
+    def to_dict(self) -> dict:
+        """把会话状态序列化为可 JSON 持久化的字典（供 DB 存取/恢复）。"""
+        return {
+            "mode": self.mode,
+            "stage_idx": self.stage_idx,
+            "asked_ids": sorted(self.asked_ids),
+            "messages": self.messages,
+            "current_q": dict(self.current_q) if self.current_q is not None else None,
+            "turn": self.turn,
+            "answers": self.answers,
+            "finished": self.finished,
+            "custom_questions": self.custom_questions,
+            "job_title": self.job_title,
+            "jd": self.jd,
+            "persona": self.persona,
+            "started_at": self.started_at,
+            "followup_count": self.followup_count,
+            "display_history": self.display_history,
+        }
+
+    @classmethod
+    def from_dict(cls, data: dict) -> "InterviewSession":
+        """从 to_dict 的产物恢复会话状态（新建，再回填各字段）。"""
+        data = data or {}
+        sess = cls(
+            mode=data.get("mode", "coach"),
+            questions=data.get("custom_questions") or None,
+            job_title=data.get("job_title") or "",
+            jd=data.get("jd") or "",
+            persona=data.get("persona") or "",
+        )
+        sess.stage_idx = int(data.get("stage_idx", 0))
+        sess.asked_ids = set(data.get("asked_ids") or [])
+        sess.messages = data.get("messages") or sess.messages
+        sess.current_q = data.get("current_q")
+        sess.turn = data.get("turn", "greeting")
+        sess.answers = data.get("answers") or []
+        sess.finished = bool(data.get("finished"))
+        sess.started_at = data.get("started_at") or sess.started_at
+        sess.followup_count = int(data.get("followup_count", 0))
+        sess.display_history = data.get("display_history") or []
+        return sess
+
+    def history_for_display(self) -> list[tuple[str, str]]:
+        """导出一份可直接展示的对话历史（优先干净的 display_history）。"""
+        if self.display_history:
+            return [(str(r), str(c)) for r, c in self.display_history]
+        out: list[tuple[str, str]] = []
+        for m in self.messages:
+            role = m.get("role")
+            if role == "system":
+                continue
+            out.append((role, (m.get("content") or "").strip()))
+        return out
 
     # ------------------------------------------------------------ 定制面试
 
@@ -281,12 +367,14 @@ class InterviewSession:
             self.messages.append(
                 {"role": "user", "content": f"（第{self.stage_idx + 1}题我的回答）{user_text}"}
             )
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。",
-                }
+            # 点评时同步注入本题参考答案（缺答案的 mianshiya 题先同步补一次）
+            reference = _ensure_reference_answer(self.current_q)
+            content = (
+                "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。"
             )
+            if reference:
+                content += f"\n\n【本题参考答案（仅供点评参考，勿照念）】\n{reference[:800]}"
+            self.messages.append({"role": "user", "content": content})
             reply = self._chat()
             self.messages.append({"role": "assistant", "content": reply})
             self.followup_count = 1
@@ -335,12 +423,14 @@ class InterviewSession:
             self.messages.append(
                 {"role": "user", "content": f"（第{self.stage_idx + 1}题我的回答）{user_text}"}
             )
-            self.messages.append(
-                {
-                    "role": "user",
-                    "content": "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。",
-                }
+            # 点评时同步注入本题参考答案（缺答案的 mianshiya 题先同步补一次）
+            reference = _ensure_reference_answer(self.current_q)
+            content = (
+                "用户刚回答了当前问题。请：1) 点评（好的方面+不足，简洁）；2) 追问 1 个深挖细节。"
             )
+            if reference:
+                content += f"\n\n【本题参考答案（仅供点评参考，勿照念）】\n{reference[:800]}"
+            self.messages.append({"role": "user", "content": content})
             # 先提交状态再流式：即使被语音打断（barge-in），下一句也会正确按"追问回答"路由
             self.followup_count = 1
             self.turn = "followup"

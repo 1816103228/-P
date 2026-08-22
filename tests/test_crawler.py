@@ -110,6 +110,20 @@ class MianShiYaTests(unittest.TestCase):
         self.assertIn("GIL", d["title"])
         self.assertTrue(d["answer"].startswith("GIL"))
 
+    @mock.patch("requests.Session.get", return_value=_fake_get(DETAIL_HTML))
+    def test_fetch_details_for_backfills(self, mock_get):
+        """按 source_id 抓详情补答案：抓取 + 回写 db + 返回统计。"""
+        ad = mianshiya.MianShiYaAdapter()
+        with mock.patch("app.db.update_question_details", return_value=1) as m_upd:
+            stats = ad.fetch_details_for(["42"])
+        self.assertEqual(stats, {"total": 1, "updated": 1})
+        m_upd.assert_called_once()
+        self.assertEqual(m_upd.call_args.args[1], "42")
+
+    def test_fetch_details_for_empty(self):
+        ad = mianshiya.MianShiYaAdapter()
+        self.assertEqual(ad.fetch_details_for([]), {"total": 0, "updated": 0})
+
 
 class LeetCodeTests(unittest.TestCase):
     @mock.patch("requests.Session.get", return_value=_fake_get(json_data=LEETCODE_PAYLOAD))
@@ -164,18 +178,17 @@ class LeetCodeTests(unittest.TestCase):
 class RunAdapterTests(unittest.TestCase):
     def test_crawl_all_passes_limit(self):
         m1 = mock.MagicMock(return_value={"source": "mianshiya", "new": 1})
-        m2 = mock.MagicMock(return_value={"source": "leetcode", "new": 1})
+        m2 = mock.MagicMock(return_value={"source": "javaguide", "new": 1})
         m3 = mock.MagicMock(return_value={"source": "nowcoder", "new": 0})
         with (
             mock.patch.object(run.mianshiya.MianShiYaAdapter, "fetch_and_store", m1),
-            mock.patch.object(run.leetcode.LeetCodeAdapter, "fetch_and_store", m2),
+            mock.patch.object(run.javaguide.JavaGuideAdapter, "fetch_and_store", m2),
             mock.patch.object(run.nowcoder.NowCoderAdapter, "fetch_and_store", m3),
         ):
             stats = run.crawl_all(limit_per_source=3)
         self.assertEqual(len(stats), 3)
-        m1.assert_called_once_with(limit=3)
-        m2.assert_called_once_with(limit=3)
-        m3.assert_called_once_with(limit=3)
+        for m in (m1, m2, m3):
+            m.assert_called_once_with(limit=3)
 
 
 if __name__ == "__main__":

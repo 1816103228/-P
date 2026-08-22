@@ -10,7 +10,6 @@ readme = "README.md"
 requires-python = ">=3.10"
 license = { text = "MIT" }
 dependencies = [
-    "streamlit>=1.36,<2",
     "requests>=2.31,<3",
     "beautifulsoup4>=4.12,<5",
     "dashscope>=1.20,<2",
@@ -36,9 +35,6 @@ xiaop-crawl = "app.crawler.run:main"
 
 [tool.setuptools]
 packages = ["app", "app.agent", "app.crawler", "app.ui"]
-
-[tool.setuptools.package-data]
-"app.ui" = ["*.html"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

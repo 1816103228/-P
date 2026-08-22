@@ -1,30 +1,16 @@
 services:
-  web:
+  app:
     build:
       context: ..
       dockerfile: Dockerfile
-    ports:
-      - "8501:8501"
-    environment:
-      DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
-      DISABLE_SCHEDULER: "0"
-    volumes:
-      - interview-data:/app/data
-    depends_on:
-      - voice
-
-  voice:
-    build:
-      context: ..
-      dockerfile: Dockerfile
-    command: uvicorn app.voice_server:app --host 0.0.0.0 --port 8765
     ports:
       - "8765:8765"
     environment:
       DEEPSEEK_API_KEY: ${DEEPSEEK_API_KEY}
       DASHSCOPE_API_KEY: ${DASHSCOPE_API_KEY}
-      VOICE_HOST: 0.0.0.0
-      VOICE_PORT: 8765
+      APP_HOST: 0.0.0.0
+      APP_PORT: 8765
+      DISABLE_SCHEDULER: "0"
     volumes:
       - interview-data:/app/data
 

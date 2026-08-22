@@ -9,6 +9,7 @@
 """
 
 import hashlib
+import json
 import logging
 import re
 import sqlite3
@@ -65,9 +66,12 @@ CREATE INDEX IF NOT EXISTS idx_session_answers_sid ON session_answers(session_id
 
 CREATE TABLE IF NOT EXISTS favorites (
     id          INTEGER PRIMARY KEY AUTOINCREMENT,
-    question_id INTEGER NOT NULL UNIQUE REFERENCES questions(id),
-    created_at  TEXT NOT NULL
+    user_id     INTEGER,                             -- 所属用户（NULL=历史遗留的全局收藏）
+    question_id INTEGER NOT NULL REFERENCES questions(id),
+    created_at  TEXT NOT NULL,
+    UNIQUE (user_id, question_id)
 );
+-- 注意：idx_favorites_user 索引由迁移 v7 统一创建（旧库的 favorites 重建后才有 user_id）
 
 -- 懒加载补抓记录：记录某个数据源的某分类是否已按需抓取过（避免重复抓取）
 CREATE TABLE IF NOT EXISTS fetched_categories (
@@ -76,6 +80,34 @@ CREATE TABLE IF NOT EXISTS fetched_categories (
     new_count   INTEGER NOT NULL DEFAULT 0,
     fetched_at  TEXT NOT NULL,
     PRIMARY KEY (source, category)
+);
+
+-- ---- 多用户：账号、登录令牌、定制面试（按用户隔离）----
+CREATE TABLE IF NOT EXISTS users (
+    id            INTEGER PRIMARY KEY AUTOINCREMENT,
+    username      TEXT NOT NULL UNIQUE COLLATE NOCASE,  -- 登录名（不区分大小写）
+    password_hash TEXT NOT NULL,                         -- pbkdf2 密码散列
+    nickname      TEXT,                                  -- 昵称（显示名）
+    persona       TEXT,                                  -- 默认面试官人格
+    created_at    TEXT NOT NULL,
+    last_login_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS auth_tokens (
+    token      TEXT PRIMARY KEY,                          -- 不透明登录令牌
+    user_id    INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+    created_at TEXT NOT NULL,
+    expires_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_auth_tokens_user ON auth_tokens(user_id);
+
+-- 定制面试（文字版生成，语音接通时读取；按用户隔离，取代旧单文件 voice_store）
+CREATE TABLE IF NOT EXISTS custom_interviews (
+    user_id        INTEGER PRIMARY KEY REFERENCES users(id) ON DELETE CASCADE,
+    job_title      TEXT,
+    jd             TEXT,
+    questions_json TEXT NOT NULL,
+    created_at     TEXT NOT NULL
 );
 """
 
@@ -135,6 +167,18 @@ END;
 """
 
 _FTS_TOKEN_RE = re.compile(r"[A-Za-z0-9_]+|[\u4e00-\u9fff]+")
+
+#: 题目清洗状态机：raw(未洗) → rule_cleaned(规则清洗) → semantic_cleaned(LLM 语义清洗) / ready(达标)
+CLEAN_STATUS_RAW = "raw"
+CLEAN_STATUS_RULE = "rule_cleaned"
+CLEAN_STATUS_SEMANTIC = "semantic_cleaned"
+CLEAN_STATUS_READY = "ready"
+CLEAN_STATUSES = (
+    CLEAN_STATUS_RAW,
+    CLEAN_STATUS_RULE,
+    CLEAN_STATUS_SEMANTIC,
+    CLEAN_STATUS_READY,
+)
 
 
 def get_conn() -> sqlite3.Connection:
@@ -198,6 +242,56 @@ def _migrate(conn: sqlite3.Connection) -> None:
         )
         conn.execute("PRAGMA user_version = 5")
         logger.info("数据库迁移至版本 5：新增懒加载补抓记录表（fetched_categories）")
+    if version < 6:
+        q_cols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
+        if "clean_status" not in q_cols:
+            conn.execute("ALTER TABLE questions ADD COLUMN clean_status TEXT NOT NULL DEFAULT 'raw'")
+        if "clean_version" not in q_cols:
+            conn.execute("ALTER TABLE questions ADD COLUMN clean_version TEXT")
+        if "cleaned_at" not in q_cols:
+            conn.execute("ALTER TABLE questions ADD COLUMN cleaned_at TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_questions_clean_status ON questions(clean_status)"
+        )
+        conn.execute("PRAGMA user_version = 6")
+        logger.info("数据库迁移至版本 6：新增清洗状态字段（clean_status/clean_version/cleaned_at）")
+    if version < 7:
+        # 多用户改造：账号 / 令牌 / 按用户定制面试；favorites 与 sessions 加 user_id。
+        # favorites 原先对 question_id 有 UNIQUE 约束（无法多用户收藏同一题），需重建表。
+        f_cols = {r[1] for r in conn.execute("PRAGMA table_info(favorites)")}
+        if "user_id" not in f_cols:
+            conn.executescript(
+                """
+                CREATE TABLE favorites_new (
+                    id          INTEGER PRIMARY KEY AUTOINCREMENT,
+                    user_id     INTEGER,
+                    question_id INTEGER NOT NULL REFERENCES questions(id),
+                    created_at  TEXT NOT NULL,
+                    UNIQUE (user_id, question_id)
+                );
+                INSERT INTO favorites_new (user_id, question_id, created_at)
+                    SELECT NULL, question_id, created_at FROM favorites;
+                DROP TABLE favorites;
+                ALTER TABLE favorites_new RENAME TO favorites;
+                """
+            )
+        conn.execute("CREATE INDEX IF NOT EXISTS idx_favorites_user ON favorites(user_id)")
+        s_cols = {r[1] for r in conn.execute("PRAGMA table_info(sessions)")}
+        if "user_id" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN user_id INTEGER")
+        if "state_json" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN state_json TEXT")
+        if "status" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN status TEXT NOT NULL DEFAULT 'done'")
+        if "updated_at" not in s_cols:
+            conn.execute("ALTER TABLE sessions ADD COLUMN updated_at TEXT")
+        conn.execute(
+            "CREATE INDEX IF NOT EXISTS idx_sessions_user_status ON sessions(user_id, status)"
+        )
+        conn.execute("PRAGMA user_version = 7")
+        logger.info(
+            "数据库迁移至版本 7：新增用户/令牌/按用户定制面试表，favorites 与 sessions 支持多用户"
+        )
     _sync_fts(conn)
 
 
@@ -255,9 +349,22 @@ def upsert_question(
     with closing(get_conn()) as conn, conn:
         cur = conn.execute(
             """INSERT OR IGNORE INTO questions
-               (source, source_id, title, content, answer, tags, difficulty, company, url, content_hash, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
-            (source, source_id, title, content, answer, tag_str, difficulty, company, url, h, now),
+               (source, source_id, title, content, answer, tags, difficulty, company, url, content_hash, fetched_at, clean_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
+            (
+                source,
+                source_id,
+                title,
+                content,
+                answer,
+                tag_str,
+                difficulty,
+                company,
+                url,
+                h,
+                now,
+                CLEAN_STATUS_RAW,
+            ),
         )
         return cur.rowcount > 0
 
@@ -283,13 +390,14 @@ def upsert_many(questions: list[dict]) -> dict:
                 q.get("url"),
                 h,
                 now,
+                CLEAN_STATUS_RAW,
             )
         )
     with closing(get_conn()) as conn, conn:
         cur = conn.executemany(
             """INSERT OR IGNORE INTO questions
-               (source, source_id, title, content, answer, tags, difficulty, company, url, content_hash, fetched_at)
-               VALUES (?,?,?,?,?,?,?,?,?,?,?)""",
+               (source, source_id, title, content, answer, tags, difficulty, company, url, content_hash, fetched_at, clean_status)
+               VALUES (?,?,?,?,?,?,?,?,?,?,?,?)""",
             rows,
         )
         new = max(cur.rowcount, 0)
@@ -332,6 +440,110 @@ def mark_category_fetched(source: str, category: str, new_count: int = 0) -> Non
                DO UPDATE SET new_count = excluded.new_count, fetched_at = excluded.fetched_at""",
             (source, category, new_count, now),
         )
+
+
+# ------------------------------------------------------------ 数据清洗状态机
+
+
+def update_question_fields(question_id: int, fields: dict) -> int:
+    """按字段字典更新题目任意列（清洗回写用），返回受影响行数。"""
+    if not fields:
+        return 0
+    sets = ", ".join(f"{k} = ?" for k in fields)
+    with closing(get_conn()) as conn, conn:
+        return conn.execute(
+            f"UPDATE questions SET {sets} WHERE id=?", [*fields.values(), question_id]
+        ).rowcount
+
+
+def list_pending_rule_clean(
+    clean_version: str, limit: int | None = None
+) -> list[sqlite3.Row]:
+    """待规则清洗的行：状态为 raw，或 clean_version 过期（规则升级后精准重洗）。"""
+    sql = (
+        "SELECT * FROM questions WHERE clean_status = ? OR "
+        "(clean_status != ? AND (clean_version IS NULL OR clean_version != ?))"
+    )
+    params: list = [CLEAN_STATUS_RAW, CLEAN_STATUS_RAW, clean_version]
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with closing(get_conn()) as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def list_pending_semantic_clean(
+    coarse_tags: set[str] | None = None, limit: int | None = None
+) -> list[sqlite3.Row]:
+    """待语义清洗（LLM 打标）的行：已过规则清洗、但标签仍粗糙/缺失。"""
+    params: list = [CLEAN_STATUS_RULE]
+    conds = ["clean_status = ?", "(tags IS NULL OR tags = '')"]
+    for t in coarse_tags or set():
+        conds.append("tags = ?")
+        params.append(t)
+    sql = "SELECT * FROM questions WHERE " + " OR ".join(conds)
+    if limit:
+        sql += " LIMIT ?"
+        params.append(limit)
+    with closing(get_conn()) as conn:
+        return conn.execute(sql, params).fetchall()
+
+
+def mark_clean(ids: list[int], status: str, clean_version: str) -> int:
+    """批量更新清洗状态（+版本+时间），返回受影响行数。"""
+    if not ids:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    placeholders = ",".join("?" * len(ids))
+    with closing(get_conn()) as conn, conn:
+        return conn.execute(
+            f"UPDATE questions SET clean_status=?, clean_version=?, cleaned_at=? "
+            f"WHERE id IN ({placeholders})",
+            [status, clean_version, now, *ids],
+        ).rowcount
+
+
+def set_question_tags(ids: list[int], tags_by_id: dict[int, str], clean_version: str) -> int:
+    """语义清洗后写回标签并标记 semantic_cleaned，返回受影响行数。"""
+    if not ids:
+        return 0
+    now = datetime.now(timezone.utc).isoformat()
+    n = 0
+    with closing(get_conn()) as conn, conn:
+        for qid in ids:
+            tag_str = tags_by_id.get(qid)
+            if tag_str is None:
+                continue
+            cur = conn.execute(
+                "UPDATE questions SET tags=?, clean_status=?, clean_version=?, cleaned_at=? "
+                "WHERE id=?",
+                (tag_str, CLEAN_STATUS_SEMANTIC, clean_version, now, qid),
+            )
+            n += cur.rowcount
+    return n
+
+
+def clean_stats() -> dict:
+    """按清洗状态统计题目数量（让清洗覆盖率可见）。"""
+    with closing(get_conn()) as conn:
+        rows = conn.execute(
+            "SELECT clean_status, COUNT(*) AS n FROM questions GROUP BY clean_status"
+        ).fetchall()
+    stats = {s: 0 for s in CLEAN_STATUSES}
+    for r in rows:
+        if r["clean_status"] in stats:
+            stats[r["clean_status"]] = r["n"]
+    stats["total"] = sum(stats.values())
+    stats["done"] = stats[CLEAN_STATUS_SEMANTIC] + stats[CLEAN_STATUS_READY]
+    return stats
+
+
+def reset_clean_status(status_from: str, status_to: str) -> int:
+    """重置清洗状态（如规则升级/清洗规则变更后把某状态批量退回重洗）。"""
+    with closing(get_conn()) as conn, conn:
+        return conn.execute(
+            "UPDATE questions SET clean_status=? WHERE clean_status=?", (status_to, status_from)
+        ).rowcount
 
 
 def list_tags() -> list[tuple[str, int]]:
@@ -391,10 +603,11 @@ def browse_questions(
     difficulty: str | None = None,
     company: str | None = None,
     favorite_only: bool = False,
+    user_id: int | None = None,
     limit: int = 30,
 ) -> list[sqlite3.Row]:
     """题库浏览检索：关键词走 FTS5（trigram → unicode61），可叠加来源/难度/公司过滤；
-    全部失败时回退 标题/题干/答案/标签 LIKE。"""
+    全部失败时回退 标题/题干/答案/标签 LIKE。favorite_only 按 user_id 过滤收藏。"""
     where: list[str] = []
     params: list = []
     if source:
@@ -413,7 +626,8 @@ def browse_questions(
             params.append(f"%{_escape_like(t)}%")
         where.append("(" + " OR ".join(conds) + ")")
     if favorite_only:
-        where.append("q.id IN (SELECT question_id FROM favorites)")
+        where.append("q.id IN (SELECT question_id FROM favorites WHERE user_id IS ?)")
+        params.append(user_id)
     cond = (" AND " + " AND ".join(where)) if where else ""
     kw = (keyword or "").strip()
     if not kw:
@@ -516,13 +730,28 @@ def create_session(
     source: str = "",
     persona: str = "",
     started_at: str | None = None,
+    user_id: int | None = None,
+    state_json: str | None = None,
+    status: str = "done",
 ) -> int:
-    """创建一条面试记录，返回 session_id。"""
+    """创建一条面试记录，返回 session_id。多用户下可带 user_id/state_json/status。"""
     started_at = started_at or datetime.now(timezone.utc).isoformat()
     with closing(get_conn()) as conn, conn:
         cur = conn.execute(
-            "INSERT INTO sessions (mode, job_title, jd, source, persona, started_at) VALUES (?,?,?,?,?,?)",
-            (mode, job_title or None, jd or None, source or None, persona or None, started_at),
+            "INSERT INTO sessions (mode, job_title, jd, source, persona, started_at, user_id, "
+            "state_json, status, updated_at) VALUES (?,?,?,?,?,?,?,?,?,?)",
+            (
+                mode,
+                job_title or None,
+                jd or None,
+                source or None,
+                persona or None,
+                started_at,
+                user_id,
+                state_json,
+                status,
+                started_at,
+            ),
         )
         return cur.lastrowid
 
@@ -568,28 +797,250 @@ def get_session_answers(session_id: int) -> list[sqlite3.Row]:
         ).fetchall()
 
 
-def add_favorite(question_id: int) -> bool:
-    """收藏题目，返回是否为新收藏（已收藏返回 False）。"""
+# ---------------------------------------------------------------- 会话状态持久化（多用户）
+
+def get_active_session(user_id: int):
+    """取某用户当前活跃会话（status='active'）。"""
+    with closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT * FROM sessions WHERE user_id = ? AND status = 'active' "
+            "ORDER BY started_at DESC LIMIT 1",
+            (user_id,),
+        ).fetchone()
+
+
+def update_session_state(
+    session_id: int,
+    state_json: str,
+    *,
+    score: int | None = None,
+    report: str | None = None,
+    weak_points: str | None = None,
+    status: str | None = None,
+) -> None:
+    """更新会话状态（state_json 及可选评分/报告/状态）。"""
+    sets = ["state_json = ?", "updated_at = ?"]
+    params: list = [state_json, datetime.now(timezone.utc).isoformat()]
+    if score is not None:
+        sets.append("score = ?")
+        params.append(score)
+    if report is not None:
+        sets.append("report = ?")
+        params.append(report)
+    if weak_points is not None:
+        sets.append("weak_points = ?")
+        params.append(weak_points)
+    if status is not None:
+        sets.append("status = ?")
+        params.append(status)
+    params.append(session_id)
+    with closing(get_conn()) as conn, conn:
+        conn.execute(f"UPDATE sessions SET {', '.join(sets)} WHERE id = ?", params)
+
+
+def archive_active_session(user_id: int) -> None:
+    """把某用户当前活跃会话标记为已完成（status='done'），用于开始新会话前归档。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute(
+            "UPDATE sessions SET status='done', updated_at=? "
+            "WHERE user_id=? AND status='active'",
+            (datetime.now(timezone.utc).isoformat(), user_id),
+        )
+
+
+def list_sessions_by_user(user_id: int, limit: int = 50) -> list[sqlite3.Row]:
+    """某用户的面试历史（含进行中与已完成的，按开始时间倒序）。"""
+    with closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT * FROM sessions WHERE user_id = ? ORDER BY started_at DESC LIMIT ?",
+            (user_id, limit),
+        ).fetchall()
+
+
+def add_favorite(question_id: int, user_id: int | None = None) -> bool:
+    """收藏题目，返回是否为新收藏（已收藏返回 False）。user_id 为空时为遗留全局收藏。
+
+    用 WHERE NOT EXISTS 保证（user_id, question_id）唯一：SQLite 的 UNIQUE 对
+    NULL user_id 不生效，需显式查重。
+    """
+    now = datetime.now(timezone.utc).isoformat()
     with closing(get_conn()) as conn, conn:
         cur = conn.execute(
-            "INSERT OR IGNORE INTO favorites (question_id, created_at) VALUES (?, ?)",
-            (question_id, datetime.now(timezone.utc).isoformat()),
+            "INSERT INTO favorites (user_id, question_id, created_at) "
+            "SELECT ?, ?, ? WHERE NOT EXISTS ("
+            "SELECT 1 FROM favorites WHERE question_id = ? AND user_id IS ?)",
+            (user_id, question_id, now, question_id, user_id),
         )
         return cur.rowcount > 0
 
 
-def remove_favorite(question_id: int) -> None:
+def remove_favorite(question_id: int, user_id: int | None = None) -> None:
     """取消收藏。"""
     with closing(get_conn()) as conn, conn:
-        conn.execute("DELETE FROM favorites WHERE question_id = ?", (question_id,))
+        conn.execute(
+            "DELETE FROM favorites WHERE question_id = ? AND user_id IS ?",
+            (question_id, user_id),
+        )
 
 
-def is_favorite(question_id: int) -> bool:
+def is_favorite(question_id: int, user_id: int | None = None) -> bool:
     with closing(get_conn()) as conn:
         row = conn.execute(
-            "SELECT 1 FROM favorites WHERE question_id = ?", (question_id,)
+            "SELECT 1 FROM favorites WHERE question_id = ? AND user_id IS ?",
+            (question_id, user_id),
         ).fetchone()
         return row is not None
+
+
+def list_favorite_ids(user_id: int | None = None) -> set[int]:
+    """取某用户收藏的题目 id 集合（用于批量高亮/收藏列表）。"""
+    with closing(get_conn()) as conn:
+        rows = conn.execute(
+            "SELECT question_id FROM favorites WHERE user_id IS ?", (user_id,)
+        ).fetchall()
+    return {r["question_id"] for r in rows}
+
+
+# ---------------------------------------------------------------- 用户与登录令牌
+
+def create_user(
+    username: str, password_hash: str, nickname: str | None = None, persona: str = ""
+) -> int | None:
+    """创建账号，返回 user_id；用户名已存在返回 None。"""
+    with closing(get_conn()) as conn, conn:
+        try:
+            cur = conn.execute(
+                "INSERT INTO users (username, password_hash, nickname, persona, created_at) "
+                "VALUES (?,?,?,?,?)",
+                (
+                    username,
+                    password_hash,
+                    nickname or None,
+                    persona or None,
+                    datetime.now(timezone.utc).isoformat(),
+                ),
+            )
+            return cur.lastrowid
+        except sqlite3.IntegrityError:
+            return None
+
+
+def get_user_by_username(username: str):
+    """按用户名取用户（用户名不区分大小写）。"""
+    with closing(get_conn()) as conn:
+        return conn.execute(
+            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+        ).fetchone()
+
+
+def get_user_by_id(user_id: int):
+    with closing(get_conn()) as conn:
+        return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+
+
+def update_user_persona(user_id: int, persona: str) -> None:
+    """更新用户默认面试官人格。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute("UPDATE users SET persona = ? WHERE id = ?", (persona or None, user_id))
+
+
+def update_user_nickname(user_id: int, nickname: str) -> None:
+    """更新用户昵称。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute("UPDATE users SET nickname = ? WHERE id = ?", (nickname or None, user_id))
+
+
+def touch_user_login(user_id: int) -> None:
+    """记录最近登录时间。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute(
+            "UPDATE users SET last_login_at = ? WHERE id = ?",
+            (datetime.now(timezone.utc).isoformat(), user_id),
+        )
+
+
+def create_auth_token(user_id: int, token: str, expires_at: str) -> None:
+    """保存登录令牌。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute(
+            "INSERT INTO auth_tokens (token, user_id, created_at, expires_at) VALUES (?,?,?,?)",
+            (token, user_id, datetime.now(timezone.utc).isoformat(), expires_at),
+        )
+
+
+def get_user_by_token(token: str):
+    """按令牌取用户（校验有效期）；无效/过期返回 None。"""
+    now = datetime.now(timezone.utc).isoformat()
+    with closing(get_conn()) as conn:
+        row = conn.execute(
+            "SELECT u.* FROM auth_tokens t JOIN users u ON u.id = t.user_id "
+            "WHERE t.token = ? AND t.expires_at > ?",
+            (token, now),
+        ).fetchone()
+    return row
+
+
+def revoke_token(token: str) -> None:
+    """注销单个令牌。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute("DELETE FROM auth_tokens WHERE token = ?", (token,))
+
+
+def revoke_all_tokens(user_id: int) -> None:
+    """注销某用户全部令牌（如修改密码/退出所有端）。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute("DELETE FROM auth_tokens WHERE user_id = ?", (user_id,))
+
+
+# ---------------------------------------------------------------- 定制面试（按用户）
+
+def save_custom_interview(
+    user_id: int, job_title: str, jd: str, questions: list[str]
+) -> None:
+    """保存某用户最新一份定制面试（覆盖旧值）。"""
+    payload = json.dumps([q for q in (questions or []) if q and q.strip()], ensure_ascii=False)
+    with closing(get_conn()) as conn, conn:
+        conn.execute(
+            "INSERT INTO custom_interviews (user_id, job_title, jd, questions_json, created_at) "
+            "VALUES (?,?,?,?,?) "
+            "ON CONFLICT(user_id) DO UPDATE SET job_title=excluded.job_title, "
+            "jd=excluded.jd, questions_json=excluded.questions_json, created_at=excluded.created_at",
+            (
+                user_id,
+                job_title or None,
+                jd or None,
+                payload,
+                datetime.now(timezone.utc).isoformat(),
+            ),
+        )
+
+
+def load_custom_interview(user_id: int) -> dict | None:
+    """读取某用户最新定制面试；不存在或无题目时返回 None。"""
+    with closing(get_conn()) as conn:
+        row = conn.execute(
+            "SELECT * FROM custom_interviews WHERE user_id = ?", (user_id,)
+        ).fetchone()
+    if not row:
+        return None
+    try:
+        questions = json.loads(row["questions_json"] or "[]")
+    except json.JSONDecodeError:
+        questions = []
+    if not questions:
+        return None
+    return {
+        "job_title": row["job_title"] or "",
+        "jd": row["jd"] or "",
+        "questions": questions,
+        "created_at": row["created_at"],
+    }
+
+
+def clear_custom_interview(user_id: int) -> None:
+    """清除某用户的定制面试。"""
+    with closing(get_conn()) as conn, conn:
+        conn.execute("DELETE FROM custom_interviews WHERE user_id = ?", (user_id,))
 
 
 def update_question_details(

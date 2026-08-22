@@ -8,6 +8,7 @@
 """
 
 import logging
+import threading
 import time
 
 from app import config, db
@@ -58,10 +59,12 @@ def _get_adapter(source: str):
 
 def resolve_categories(job_title: str, jd: str, keywords: list[str]) -> list[tuple[str, str, str]]:
     """岗位/JD/技术栈关键词 → [(源名, 分类, 展示名)]，去重保序。"""
+    # 拼接关键词并统一小写，便于不区分大小写地匹配
     text = f"{job_title or ''} {jd or ''} {' '.join(keywords or [])}".lower()
     hits: list[tuple[str, str, str]] = []
     seen: set[tuple[str, str]] = set()
     for kw, source, cat, label in JOB_CATEGORY_MAP:
+        # 命中且未记录过才加入，避免同一分类重复
         if kw.lower() in text and (source, cat) not in seen:
             seen.add((source, cat))
             hits.append((source, cat, label))
@@ -74,7 +77,9 @@ def _fetch_category(source: str, category: str) -> list[dict]:
     if adapter is None:
         logger.warning("未知数据源 %s，跳过懒加载", source)
         return []
+    # 只抓列表页，答案留给定时全量抓取补全
     rows = adapter.fetch_category(category, pages=LAZY_PAGES, limit=LAZY_LIMIT)
+    # 有数据才入库
     if rows:
         db.upsert_many(rows)
     return rows
@@ -89,40 +94,53 @@ def backfill_for_job(
 ) -> dict:
     """零命中时按岗位补抓真题入库。
 
-    返回 {'attempted': 尝试抓取的分类数, 'new': 新入库数, 'detail': 给用户的说明}。
+    返回 {'attempted': 尝试抓取的分类数, 'new': 新入库数, 'detail': 给用户的说明,
+          'source_ids': {源名: [source_id, ...]}}（本次补抓到的题，供后台追答案）。
     全程不抛异常：任何源失败都跳过，保证定制面试流程不中断。
     """
-    result = {"attempted": 0, "new": 0, "detail": ""}
+    result = {"attempted": 0, "new": 0, "detail": "", "source_ids": {}}
+    # 解析要抓的分类
     cats = resolve_categories(job_title, jd, keywords)
     if not cats:
         result["detail"] = "未识别到可补抓的分类"
         return result
 
+    # 总超时控制
     timeout = config.LAZY_CRAWL_TIMEOUT if timeout_seconds is None else timeout_seconds
     deadline = time.monotonic() + max(timeout, 1.0)
     fetched_labels: list[str] = []
     for source, cat, label in cats:
+        # 超时提前停止
         if time.monotonic() > deadline:
             logger.warning("懒加载补抓超时，提前停止")
             break
+        # 已抓过的分类跳过
         if db.is_category_fetched(source, cat):
             continue  # 已抓过，跳过
+        # 通知用户当前在抓哪个分类
         if progress:
             progress(f"本地题库暂无匹配，正在全力抓取「{label}」真题…")
+        # 单分类失败只跳过，不影响其他分类
         try:
             rows = _fetch_category(source, cat)
         except Exception as e:
             logger.warning("懒加载抓取 %s/%s 失败: %s", source, cat, e)
             continue
         if not rows:
-            # 分类不存在/无数据：记录避免反复试，仍回退 AI 生成
+            # 无数据：标记已抓避免反复试，回退 AI 生成
             db.mark_category_fetched(source, cat, 0)
             continue
+        # 成功：记录已抓并累计统计
         db.mark_category_fetched(source, cat, len(rows))
         result["attempted"] += 1
         result["new"] += len(rows)
+        # 收集本次补抓到的 source_id，供后台追答案
+        result["source_ids"].setdefault(source, []).extend(
+            r["source_id"] for r in rows if r.get("source_id")
+        )
         fetched_labels.append(label)
 
+    # 生成给用户的说明文案
     if result["new"]:
         result["detail"] = (
             "已补抓「" + "、".join(fetched_labels) + "」真题 " + str(result["new"]) + " 道"
@@ -130,3 +148,33 @@ def backfill_for_job(
     else:
         result["detail"] = "未抓到该岗位对应的题库真题"
     return result
+
+
+def enrich_answers(source: str, source_ids: list[str]) -> dict:
+    """同步抓详情补答案：把已入库但缺答案的题补全（供后台线程调用）。"""
+    if not source_ids:
+        return {"total": 0, "updated": 0}
+    adapter = _get_adapter(source)
+    if adapter is None or not hasattr(adapter, "fetch_details_for"):
+        logger.warning("数据源 %s 不支持追答案，跳过", source)
+        return {"total": len(source_ids), "updated": 0, "error": "unsupported"}
+    return adapter.fetch_details_for(source_ids)
+
+
+def enrich_answers_async(source: str, source_ids: list[str]) -> bool:
+    """后台线程追答案：不阻塞出题/面试，答题期间答案异步补全。
+
+    尽力而为：线程异常只记日志；即使进程结束未跑完，定时全量抓取仍会兜底补全。
+    """
+    if not source_ids:
+        return False
+
+    def _run() -> None:
+        try:
+            stats = enrich_answers(source, source_ids)
+            logger.info("后台补答案完成 %s %s: %s", source, len(source_ids), stats)
+        except Exception:
+            logger.exception("后台补答案失败 %s", source)
+
+    threading.Thread(target=_run, name=f"enrich-{source}", daemon=True).start()
+    return True

@@ -1,20 +1,19 @@
-"""题库分类标注：用 DeepSeek 批量给未分类的题打标签。
+"""语义清洗引擎：用 DeepSeek 批量给标签粗糙的题打标（供 app.crawler.clean 调用）。
 
-用法：
-    python -m app.crawler.classify          # 全量标注
-    python -m app.crawler.classify --dry     # 预览，不写库
-    python -m app.crawler.classify --limit 50  # 只标前 50 条
+清洗入口已收敛到统一清洗层 app/crawler/clean.py（clean_status 状态机）；
+本模块只保留 LLM 打标的引擎部分（标签池 / 提示词 / 批处理 / 解析重试）。
 
-优化：要求 json_object 结构化输出；解析失败自动重试一次并追加纠错提示。
+用法（推荐走统一入口）：
+    python -m app.crawler.clean --semantic       # 语义清洗增量
+    python -m app.crawler.clean --semantic --dry # 预览，不写库
 """
 
 import argparse
 import json
 import logging
 import re
-import time
 
-from app import db
+from app import config, db
 from app.agent.llm import chat
 
 logger = logging.getLogger("interview_coach.crawler.classify")
@@ -127,57 +126,13 @@ def classify_batch(questions: list[dict]) -> list[list[str]] | None:
 
 
 def classify_all(limit: int | None = None, dry_run: bool = False) -> None:
-    """对题库中所有未分类的题打标签（已有细标签的跳过）。"""
-    conn = db.get_conn()
-    try:
-        rows = conn.execute(
-            """SELECT id, title, tags FROM questions
-               WHERE tags IS NULL
-                  OR tags IN ('算法,数据结构', '后端', '')
-                  OR (source = 'mianshiya' AND tags NOT LIKE '%Python基础%')
-               ORDER BY fetched_at
-            """
-        ).fetchall()
-    finally:
-        conn.close()
+    """对标签粗糙/缺失的题做语义清洗（委托统一清洗层，增量推进）。"""
+    from app.crawler import clean
 
-    if limit:
-        rows = rows[:limit]
-
-    total = len(rows)
-    if total == 0:
-        print("没有需要标注的题目。")
-        return
-
-    print(f"待标注题目：{total} 条（每批 {BATCH_SIZE} 条，约 {total // BATCH_SIZE + 1} 批）\n")
-
-    done = 0
-    for i in range(0, total, BATCH_SIZE):
-        batch_rows = rows[i : i + BATCH_SIZE]
-        batch_dicts = [{"title": r["title"]} for r in batch_rows]
-        tags_list = classify_batch(batch_dicts)
-        if tags_list is None:
-            print("  [警告] 本批解析失败，跳过（可重跑）")
-            continue
-
-        for row, tags in zip(batch_rows, tags_list, strict=False):
-            if tags:
-                done += 1
-                tag_str = ",".join(tags)
-                if dry_run:
-                    print(f"  [{row['id']}] {row['title'][:60]} → {tag_str}")
-                else:
-                    conn = db.get_conn()
-                    try:
-                        conn.execute("UPDATE questions SET tags=? WHERE id=?", (tag_str, row["id"]))
-                        conn.commit()
-                    finally:
-                        conn.close()
-
-        print(f"  进度: {min(i + BATCH_SIZE, total)}/{total} (已标注 {done})")
-        time.sleep(0.5)  # 避免触发 API 限流
-
-    print(f"\n完成！共标注 {done} 道题" + (" [预览模式，未写库]" if dry_run else ""))
+    print(f"正在语义清洗（单次最多 {config.CLEAN_SEMANTIC_BATCH_LIMIT} 条）…")
+    stats = clean.run_semantic_clean(limit=limit, dry_run=dry_run)
+    print(stats)
+    print("清洗统计:", clean.clean_stats())
 
 
 if __name__ == "__main__":

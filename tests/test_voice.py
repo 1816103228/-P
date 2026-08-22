@@ -10,10 +10,20 @@ from pathlib import Path
 from types import SimpleNamespace
 from unittest import mock
 
-import app.voice_store as voice_store
+from app import auth, config, db
 from app.agent.coach import InterviewSession
 from app.voice_server import _cosyvoice_synthesize, _synthesize, app, maybe_switch_to_mock
 from fastapi.testclient import TestClient
+
+
+def _test_token() -> str:
+    """创建/取测试用户并签发令牌（多用户语音 WS 需登录）。"""
+    user = db.get_user_by_username("voice_test")
+    if user is None:
+        db.create_user("voice_test", auth.hash_password("testpass123"))
+        user = db.get_user_by_username("voice_test")
+    db.archive_active_session(user["id"])  # 清理上一轮测试的活跃会话
+    return auth.issue_token(user["id"])
 
 
 async def _fake_synth(ws, state, sentence):
@@ -57,17 +67,17 @@ LONG_SPLIT_TEXT = (
 
 class VoiceServerTests(unittest.TestCase):
     def setUp(self):
-        # 会话保留是模块级状态，测试间必须重置，避免串扰
-        import app.voice_server as voice_server
-
-        voice_server._last_session = None
-        # 隔离定制面试共享文件，避免真实 data/ 下的残留状态干扰测试
-        self._tmp_custom = Path(tempfile.mkdtemp()) / "voice_custom_interview.json"
-        self._custom_patch = mock.patch.object(voice_store, "_CUSTOM_FILE", self._tmp_custom)
-        self._custom_patch.start()
+        # 隔离数据库：语音测试不污染真实 data/questions.db
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "test_voice.db"
+        self._db_patch = mock.patch.object(config, "DB_PATH", self._db_path)
+        self._db_patch.start()
+        db.init_db()
+        self.token = _test_token()
 
     def tearDown(self):
-        self._custom_patch.stop()
+        self._db_patch.stop()
+        self._tmpdir.cleanup()
 
     def test_maybe_switch_to_mock_on_first_message(self):
         s = InterviewSession("coach")
@@ -94,7 +104,7 @@ class VoiceServerTests(unittest.TestCase):
         with (
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             # 接通后先收到开场白（像打电话一样），消化完再提问
             greeting_deltas, *_ = _recv_until_done(ws)
@@ -126,7 +136,7 @@ class VoiceServerTests(unittest.TestCase):
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=fail_once),
             mock.patch("app.voice_server.TTS_MAX_CONCURRENCY", 1),  # 串行：保证降级判定确定
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白（同样走降级，不计数）
             ws.send_text(json.dumps({"type": "text", "content": "你好"}, ensure_ascii=False))
@@ -152,7 +162,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server.edge_tts", SimpleNamespace(Communicate=FakeComm)),
             mock.patch("app.voice_server.config.VOICE_TTS", "edge"),
             TestClient(app) as client,
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
             first_sid = None
@@ -200,7 +210,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server._tts_circuit_open", return_value=False),
             mock.patch("app.voice_server.TTS_MAX_CONCURRENCY", 1),  # 串行：保证断言确定
             TestClient(app) as client,
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白（同样中途失败，先清空）
             ws.send_text(json.dumps({"type": "text", "content": "你好"}, ensure_ascii=False))
@@ -238,7 +248,7 @@ class VoiceServerTests(unittest.TestCase):
         with (
             mock.patch("app.voice_server._synthesize", side_effect=fake_synth),
             TestClient(app) as client,
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
             calls.clear()
@@ -267,7 +277,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server.TTS_FIRST_CHARS", 1),
             mock.patch("app.voice_server.TTS_CHUNK_CHARS", 1),
             TestClient(app) as client,
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
             calls.clear()
@@ -362,7 +372,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server.config.DASHSCOPE_API_KEY", "sk-test"),
             mock.patch("app.voice_server._cosyvoice_synthesize", return_value=FAKE_AUDIO),
             TestClient(app) as client,
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白（同样走 CosyVoice 路径）
             ws.send_text(json.dumps({"type": "text", "content": "你好"}, ensure_ascii=False))
@@ -441,7 +451,7 @@ class VoiceServerTests(unittest.TestCase):
         with (
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=recording_synth),
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)
         self.assertEqual(len(calls), 1, "开场白应整段一次合成")
@@ -496,7 +506,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.agent.llm.chat_stream", side_effect=fake_stream),
             TestClient(app) as client,
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             greeting_deltas, *_ = _recv_until_done(ws)
             ws.send_text(json.dumps({"type": "text", "content": "我叫张三"}, ensure_ascii=False))
@@ -508,20 +518,26 @@ class VoiceServerTests(unittest.TestCase):
         self.assertIn("定制题一", seen.get("last_user", ""), "应使用已保存的定制题目")
 
     @mock.patch(
-        "app.voice_server.voice_store.load_custom_interview",
+        "app.routers.custom.voice_store.load_custom_interview",
         return_value={"job_title": "后端开发", "questions": ["Q1"]},
     )
     def test_custom_status_endpoint(self, mock_load):
-        """语音页通过该接口判断是否已准备定制面试。"""
+        """语音页通过该接口判断该用户是否已准备定制面试（需登录）。"""
         with TestClient(app) as client:
-            resp = client.get("/api/voice/custom")
+            resp = client.get(
+                "/api/custom/status",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
         self.assertEqual(resp.status_code, 200)
         self.assertEqual(resp.json(), {"ready": True, "job_title": "后端开发"})
 
-    @mock.patch("app.voice_server.voice_store.load_custom_interview", return_value=None)
+    @mock.patch("app.routers.custom.voice_store.load_custom_interview", return_value=None)
     def test_custom_status_endpoint_empty(self, mock_load):
         with TestClient(app) as client:
-            resp = client.get("/api/voice/custom")
+            resp = client.get(
+                "/api/custom/status",
+                headers={"Authorization": f"Bearer {self.token}"},
+            )
         self.assertEqual(resp.json(), {"ready": False, "job_title": ""})
 
     def test_cosyvoice_request_downloads_url(self):
@@ -646,7 +662,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
             mock.patch("app.voice_server.DashScopeASR", FakeASR),
             mock.patch("app.voice_server.ASR_RETRY_DELAY", 0.05),
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
             # asr_start：处理器首次启动失败 → asr_error，监督任务接管
@@ -690,7 +706,7 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
             mock.patch("app.voice_server.DashScopeASR", FakeASR),
             mock.patch("app.voice_server.ASR_RETRY_DELAY", 0.05),
-            client.websocket_connect("/ws/voice") as ws,
+            client.websocket_connect(f"/ws/voice?token={self.token}") as ws,
         ):
             _recv_until_done(ws)  # 消化开场白
             ws.send_text(json.dumps({"type": "asr_start", "sample_rate": 16000}))
@@ -718,14 +734,14 @@ class VoiceServerTests(unittest.TestCase):
             mock.patch("app.agent.llm.chat_stream", side_effect=fake_stream),
             mock.patch("app.voice_server._synthesize", side_effect=_fake_synth),
         ):
-            with client.websocket_connect("/ws/voice") as ws:
+            with client.websocket_connect(f"/ws/voice?token={self.token}") as ws:
                 greeting1, *_ = _recv_until_done(ws)
                 ws.send_text(
                     json.dumps({"type": "text", "content": "第一个问题"}, ensure_ascii=False)
                 )
                 _recv_until_done(ws)
             self.assertEqual(seen["user_msgs"], 1)
-            with client.websocket_connect("/ws/voice") as ws2:
+            with client.websocket_connect(f"/ws/voice?token={self.token}") as ws2:
                 greeting2, *_ = _recv_until_done(ws2)
                 ws2.send_text(
                     json.dumps({"type": "text", "content": "第二个问题"}, ensure_ascii=False)
@@ -735,15 +751,33 @@ class VoiceServerTests(unittest.TestCase):
         self.assertNotIn("欢迎回来", "".join(greeting1))
         self.assertEqual(seen["user_msgs"], 2, "第二次回复的上下文应包含第一轮的用户消息")
 
-    def test_voice_page_served(self):
-        """方案A：独立语音通话页由 FastAPI 直接托管，占位符被替换。"""
+    def test_spa_served_at_root(self):
+        """统一服务在 / 托管 Vue3 SPA；/voice 走 history 回退到 index.html；语音配置接口可用。"""
+        dist_index = Path(__file__).resolve().parents[1] / "frontend" / "dist" / "index.html"
+        if not dist_index.exists():
+            self.skipTest("前端未构建，跳过 SPA 托管检查")
         with TestClient(app) as client:
-            resp = client.get("/")
-        self.assertEqual(resp.status_code, 200)
-        self.assertIn("text/html", resp.headers["content-type"])
-        self.assertIn("callBtn", resp.text)
-        self.assertNotIn("__VAD_THRESHOLD__", resp.text)
-        self.assertNotIn("__WEB_URL__", resp.text)
+            root = client.get("/")
+            voice = client.get("/voice")
+            cfg = client.get("/api/config/voice")
+        self.assertEqual(root.status_code, 200)
+        self.assertIn("text/html", root.headers["content-type"])
+        self.assertIn('id="app"', root.text)
+        self.assertEqual(voice.status_code, 200)
+        self.assertIn('id="app"', voice.text)
+        self.assertEqual(cfg.status_code, 200)
+        self.assertIn("vad_threshold", cfg.json())
+
+    def test_ws_rejects_missing_token(self):
+        """多用户：语音 WS 无有效令牌应被拒绝（4401），不会进入通话。"""
+        from starlette.websockets import WebSocketDisconnect
+
+        with (
+            TestClient(app) as client,
+            self.assertRaises(WebSocketDisconnect),
+            client.websocket_connect("/ws/voice") as ws,
+        ):
+            ws.receive_text()
 
 
 if __name__ == "__main__":

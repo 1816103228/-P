@@ -32,6 +32,19 @@ def _parse_json_object(reply: str) -> dict | None:
         return None
 
 
+def _first_nonempty(d: dict, *keys: str) -> str:
+    """按顺序取第一个非空（非 None 且非空串）键值，保留 0/False 等假值。
+
+    相比 `item.get("a") or item.get("b")`：or 会把 0/False/空串一律当作缺失丢弃；
+    此函数只跳过 None 与空串，适合从 LLM 宽松输出里取字段。
+    """
+    for k in keys:
+        v = d.get(k)
+        if v not in (None, ""):
+            return str(v)
+    return ""
+
+
 def _fallback_keywords(job_title: str, jd: str) -> list[str]:
     """LLM 提取失败时，按常见分隔符拆分岗位/JD 作为关键词兜底。"""
     text = f"{job_title} {jd}"
@@ -66,7 +79,7 @@ def extract_tech_stack(job_title: str, jd: str) -> list[str]:
         logger.exception("技术栈提取失败，回退关键词拆分")
         return _fallback_keywords(job_title, jd)
     data = _parse_json_object(reply)
-    keywords = data.get("keywords") if data else None
+    keywords = data.get("keywords") if isinstance(data, dict) else None
     if isinstance(keywords, list):
         cleaned = [str(k).strip() for k in keywords if str(k).strip()]
         if cleaned:
@@ -75,10 +88,11 @@ def extract_tech_stack(job_title: str, jd: str) -> list[str]:
 
 
 def search_bank(keywords: list[str], limit: int = 8) -> list[dict]:
-    """按技术栈关键词检索本地题库，返回去重后的 {title, difficulty} 列表。
+    """按技术栈关键词检索本地题库，返回去重后的 {title, difficulty, answer} 列表。
 
     每个关键词走 db.fts_search（trigram 中文子串 → unicode61 → LIKE 三级回退），
-    比原来的 title LIKE 单路检索命中率高得多。
+    比原来的 title LIKE 单路检索命中率高得多。answer 为参考答案（截断 300 字，
+    供出题 prompt 作参考增强；源站无答案时为空串）。
     """
     seen: set[str] = set()
     hits: list[dict] = []
@@ -91,7 +105,18 @@ def search_bank(keywords: list[str], limit: int = 8) -> list[dict]:
             if not title or title in seen:
                 continue
             seen.add(title)
-            hits.append({"title": title, "difficulty": row["difficulty"] or "未知"})
+            # 兼容 sqlite3.Row（列不存在抛 IndexError）与测试 mock 的 dict（抛 KeyError）
+            try:
+                answer = row["answer"] or ""
+            except (KeyError, IndexError):
+                answer = ""
+            hits.append(
+                {
+                    "title": title,
+                    "difficulty": row["difficulty"] or "未知",
+                    "answer": (answer or "")[:300],
+                }
+            )
             if len(hits) >= limit:
                 return hits
     return hits
@@ -100,14 +125,16 @@ def search_bank(keywords: list[str], limit: int = 8) -> list[dict]:
 def _parse_questions(reply: str, count: int) -> list[str] | None:
     """解析题目：优先 JSON，兼容旧版纯文本编号列表。"""
     data = _parse_json_object(reply)
-    if data is not None:
-        if isinstance(data.get("questions"), list):
+    if isinstance(data, dict):
+        questions = data.get("questions")
+        if isinstance(questions, list):
             out: list[str] = []
-            for item in data["questions"]:
+            for item in questions:
                 if isinstance(item, str):
                     out.append(item.strip())
                 elif isinstance(item, dict):
-                    out.append(str(item.get("question") or item.get("title") or "").strip())
+                    # 用 _first_nonempty 而非 or 链：保留 0/False 等假值，仅跳过 None/空串
+                    out.append(_first_nonempty(item, "question", "title").strip())
             out = [q for q in out if q]
             if out:
                 return out[:count]
@@ -140,20 +167,33 @@ def generate_interview_questions_with_meta(
     if progress:
         progress("正在检索本地题库…")
     bank_hits = search_bank(tech)
-    lazy_info = {"attempted": 0, "new": 0, "detail": ""}
+    lazy_info = {"attempted": 0, "new": 0, "detail": "", "source_ids": {}}
     if not bank_hits:
-        # 零命中：懒加载按岗位补抓对应分类真题入库，再检索一次
+        # 零命中：懒加载按岗位补抓对应分类真题入库（只抓列表页，秒级），再检索一次
         if progress:
             progress("本地题库暂无匹配，正在全力抓取相关真题…")
         try:
             lazy_info = lazy.backfill_for_job(job_title, jd, tech, progress=progress)
         except Exception:
             logger.exception("懒加载补抓失败，回退 AI 生成")
+        # 类型兜底：防御 backfill_for_job 返回非 dict（协议变更/异常返回时也能安全 .get）
+        if not isinstance(lazy_info, dict):
+            lazy_info = {"attempted": 0, "new": 0, "detail": "", "source_ids": {}}
+        # 补抓成功后：题目已就绪，后台线程异步追答案（不阻塞出题/面试，答题期间补齐）
+        if lazy_info.get("new"):
+            if progress:
+                progress("已补抓真题，参考答案正在后台补全…")
+            for src, ids in (lazy_info.get("source_ids") or {}).items():
+                lazy.enrich_answers_async(src, ids)
         bank_hits = search_bank(tech)
     if progress:
         progress("正在生成面试题…")
 
-    bank_block = "\n".join(f"- {h['title']}（{h['difficulty']}）" for h in bank_hits)
+    bank_block = "\n".join(
+        f"- {h['title']}（{h['difficulty']}）"
+        + (f"\n    参考答案：{h['answer'][:300]}" if h.get("answer") else "")
+        for h in bank_hits
+    )
     if bank_hits:
         bank_note = f"本地题库中可参考的真题（可选用或改写，不要照搬编号）：\n{bank_block}"
     else:
@@ -187,7 +227,8 @@ def generate_interview_questions_with_meta(
         "sources": [source] * len(questions),
         "bank_hits": bank_hits,
         "lazy": lazy_info,
-        "lazy_fetched": bool(lazy_info.get("new")),
+        "lazy_fetched": bool(lazy_info.get("new", 0)),
+        "answer_backfill": bool(lazy_info.get("new", 0)),
     }
     return questions, meta
 

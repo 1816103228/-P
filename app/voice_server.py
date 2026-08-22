@@ -1,12 +1,17 @@
-"""面试官小P 语音通话服务（FastAPI + WebSocket + edge-tts 神经语音）。
+"""面试官小P 统一 Web 服务（FastAPI + WebSocket + edge-tts 神经语音）。
 
-链路设计（实现"像打电话一样"的实时对话）：
+多用户改造后为唯一后端：同时提供
+- REST API（认证 / 会话与聊天 / 题库 / 定制面试，见 app/routers/）；
+- Vue3 前端静态托管（frontend/dist，SPA history 回退）；
+- 语音通话 WebSocket（按用户认证与持久化）。
+
+语音链路设计（实现"像打电话一样"的实时对话）：
 - 浏览器端：连续语音识别（Web Speech API），每识别出一句话发给本服务；
   播报期间用带回声抑制的麦克风音量检测（VAD）实现"开口即打断"。
 - 本服务：DeepSeek 流式回复按句子切分，逐句用 edge-tts 合成 MP3 推回，
   浏览器按序播放，边生成边播报。
 
-WebSocket 协议（JSON 文本帧）：
+WebSocket 协议（JSON 文本帧，需 ?token=<登录令牌>）：
   客户端 -> 服务端：{"type":"text","content":...} / {"type":"stop"}
   服务端 -> 客户端：
     {"type":"delta","content":...}                      文本增量（状态显示）
@@ -34,15 +39,20 @@ from pathlib import Path
 import requests
 import uvicorn
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
-from fastapi.responses import HTMLResponse
+from fastapi.responses import FileResponse, JSONResponse
 from fastapi.staticfiles import StaticFiles
 
 import app.db as db
+import app.session_store as session_store
 import app.voice_store as voice_store
-from app import config, prompts
+from app import auth, config, prompts
 from app.agent import llm
 from app.agent.coach import InterviewSession
 from app.asr_client import DashScopeASR
+from app.routers import auth as auth_api
+from app.routers import custom as custom_api
+from app.routers import questions as questions_api
+from app.routers import session as session_api
 from app.scheduler import setup_logging
 
 try:
@@ -116,7 +126,13 @@ async def lifespan(_app: FastAPI):
     yield
 
 
-app = FastAPI(title="面试官小P 语音通话服务", lifespan=lifespan)
+app = FastAPI(title="面试官小P", lifespan=lifespan)
+app.include_router(auth_api.router)
+app.include_router(session_api.router)
+app.include_router(questions_api.router)
+app.include_router(custom_api.router)
+
+# 静态资源：虚拟人物头像（聊天页 / 语音页共用）
 app.mount(
     "/assets",
     StaticFiles(directory=Path(__file__).resolve().parent / "ui" / "assets"),
@@ -138,28 +154,16 @@ async def health() -> dict:
     return {"status": "ok"}
 
 
-@app.get("/api/voice/custom")
-async def custom_interview_status() -> dict:
-    """语音页查询是否有待执行的定制面试（用于提示与模式徽标）。"""
-    custom = voice_store.load_custom_interview()
+@app.get("/api/config/voice")
+async def voice_config() -> dict:
+    """前端语音页所需运行时配置（VAD 阈值等，替代旧 HTML 模板替换注入）。"""
     return {
-        "ready": custom is not None,
-        "job_title": (custom or {}).get("job_title", ""),
+        "vad_threshold": config.VOICE_VAD_THRESHOLD,
+        "vad_hits": config.VOICE_VAD_HITS,
+        "vad_quiet_frames": config.VOICE_VAD_QUIET_FRAMES,
+        "vad_noise_margin": config.VOICE_VAD_NOISE_MARGIN,
+        "tts": config.VOICE_TTS,
     }
-
-
-@app.get("/", response_class=HTMLResponse)
-async def voice_page() -> str:
-    """独立语音通话页（方案A）：由 FastAPI 直接托管，摆脱 Streamlit iframe/rerun 限制。"""
-    # 每次请求实时读取，前端改动即时生效（无需重启语音服务）
-    html = (Path(__file__).resolve().parent / "ui" / "voice_page.html").read_text(encoding="utf-8")
-    return (
-        html.replace("__VAD_THRESHOLD__", str(config.VOICE_VAD_THRESHOLD))
-        .replace("__VAD_HITS__", str(config.VOICE_VAD_HITS))
-        .replace("__VAD_QUIET_FRAMES__", str(config.VOICE_VAD_QUIET_FRAMES))
-        .replace("__VAD_NOISE_MARGIN__", str(config.VOICE_VAD_NOISE_MARGIN))
-        .replace("__WEB_URL__", config.WEB_URL)
-    )
 
 
 def _split_sentences(buf: str) -> tuple[list[str], str]:
@@ -472,18 +476,15 @@ def _build_custom_greeting(custom: dict) -> str:
     )
 
 
-def _clear_custom_when_finished(session: InterviewSession) -> None:
-    """定制面试正常结束后，清除待执行状态，避免下次接通重复同一套题。"""
+def _clear_custom_when_finished(user_id: int, session: InterviewSession) -> None:
+    """定制面试正常结束后，清除该用户待执行状态，避免下次接通重复同一套题。"""
     if (
         getattr(session, "finished", False)
         and session.mode == "mock"
         and getattr(session, "custom_questions", None)
     ):
-        voice_store.clear_custom_interview()
+        voice_store.clear_custom_interview(user_id)
 
-
-#: 挂断/断线后保留会话，重连时继续上一轮对话（单用户本地场景）
-_last_session: InterviewSession | None = None
 
 REOPEN_GREETING = (
     "欢迎回来，我们继续刚才的对话。你可以直接提问，也可以说“开始面试”开始一场新的模拟面试。"
@@ -492,9 +493,14 @@ REOPEN_GREETING = (
 
 @app.websocket("/ws/voice")
 async def voice(ws: WebSocket) -> None:
-    global _last_session
+    # 多用户认证：WebSocket 无法携带请求头，用查询参数 ?token=...
+    user = auth.resolve_token_user(ws.query_params.get("token"))
+    if user is None:
+        await ws.close(code=4401, reason="未登录或登录已过期")
+        return
+    user_id = user["id"]
     await ws.accept()
-    custom = voice_store.load_custom_interview()
+    custom = voice_store.load_custom_interview(user_id)
     if custom:
         # 已准备定制面试 → 接通即进入模拟面试，用定制题目
         session = InterviewSession(
@@ -504,16 +510,17 @@ async def voice(ws: WebSocket) -> None:
             jd=custom.get("jd", ""),
         )
         greeting = _build_custom_greeting(custom)
-        _last_session = session
-    elif _last_session is not None and not _last_session.finished:
-        # 上次通话未结束（模拟面试进行中/辅导答疑）→ 接着聊，不重新开场
-        session = _last_session
-        greeting = REOPEN_GREETING
     else:
-        # 默认辅导答疑；首条说"开始面试"则切换模拟面试
-        session = InterviewSession("coach")
-        greeting = prompts.VOICE_GREETING
-        _last_session = session
+        # 该用户未结束的活跃会话 → 接着聊；否则默认辅导答疑
+        session = session_store.load_active_session(user_id)
+        if session is not None and not session.finished:
+            greeting = REOPEN_GREETING
+        else:
+            session = InterviewSession("coach")
+            greeting = prompts.VOICE_GREETING
+    # 新建会话（语音发起的默认答疑 / 语音定制）落库，供文字版与后续语音共享
+    if getattr(session, "session_id", None) is None:
+        session_store.start_session(user_id, session)
     generation: asyncio.Task | None = None
     loop = asyncio.get_running_loop()
     asr: DashScopeASR | None = None
@@ -642,14 +649,24 @@ async def voice(ws: WebSocket) -> None:
             text = (msg.get("content") or "").strip()
             if not text:
                 continue
-            session = maybe_switch_to_mock(session, text)
-            _last_session = session
+            new_session = maybe_switch_to_mock(session, text)
+            if new_session is not session:
+                # 从答疑切换为模拟面试：新会话入库，替换当前会话
+                session = new_session
+                session_store.start_session(user_id, session)
             # 用户开口 → 取消上一轮未完成的生成（barge-in）
             if generation is not None and not generation.done():
                 generation.cancel()
             task = asyncio.create_task(_produce(ws, session, text))
-            # 定制面试结束（输出总结报告）后清除待执行状态，避免下次接通重复同一套题
-            task.add_done_callback(lambda _t, s=session: _clear_custom_when_finished(s))
+
+            def _on_produce_done(t, s=session):
+                # 定制面试结束（输出总结报告）后清除待执行状态，避免下次接通重复同一套题
+                _clear_custom_when_finished(user_id, s)
+                # 每次回复完成即持久化会话状态（断线/刷新可恢复）
+                with suppress(Exception):
+                    session_store.save_session(user_id, s)
+
+            task.add_done_callback(_on_produce_done)
             generation = task
     except WebSocketDisconnect:
         logger.info("语音通话已断开")
@@ -663,9 +680,34 @@ async def voice(ws: WebSocket) -> None:
             asr.stop()
 
 
+#: Vue3 前端构建产物目录（frontend/dist）；未构建时前端路由返回提示
+_FRONTEND_DIST = Path(__file__).resolve().parent.parent / "frontend" / "dist"
+
+
+@app.get("/{full_path:path}", include_in_schema=False)
+async def spa_fallback(full_path: str):
+    """托管 Vue3 SPA：命中文件返回文件，其余交给 index.html（history 路由回退）。
+
+    必须注册在所有具体路由之后（本文件最末），确保 /api、/ws/voice、/assets 优先匹配。
+    """
+    if full_path.startswith(("api/", "ws/")):
+        return JSONResponse({"detail": "Not Found"}, status_code=404)
+    if full_path:
+        candidate = _FRONTEND_DIST / full_path
+        if candidate.is_file():
+            return FileResponse(candidate)
+    index = _FRONTEND_DIST / "index.html"
+    if index.is_file():
+        return FileResponse(index)
+    return JSONResponse(
+        {"detail": "前端尚未构建，请先在 frontend/ 下运行 npm run build"},
+        status_code=404,
+    )
+
+
 def main() -> None:
-    """命令行入口：启动语音通话服务。"""
-    uvicorn.run(app, host=config.VOICE_HOST, port=config.VOICE_PORT)
+    """命令行入口：启动统一 Web 服务（Vue3 前端 + REST + 语音，单端口）。"""
+    uvicorn.run(app, host=config.APP_HOST, port=config.APP_PORT)
 
 
 if __name__ == "__main__":

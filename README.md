@@ -1,6 +1,6 @@
 # 面试官小P 🎤
 
-基于 DeepSeek 大模型的 **Python/后端面试模拟与辅导 Agent**。以 Streamlit 聊天界面为载体，结合实时爬取的面试题库，提供**模拟面试**与**辅导答疑**两种模式，帮你为真实面试做好充分准备。
+基于 DeepSeek 大模型的 **Python/后端面试模拟与辅导 Agent**。以 **Vue3 网页界面**为载体（支持**多用户账号**、会话云端持久化），结合实时爬取的面试题库，提供**模拟面试**与**辅导答疑**两种模式，帮你为真实面试做好充分准备。
 
 > 🎓 **完全没接触过的小白？** 先看 [小白入门教程](TUTORIAL.md)，从装 Python 到跑起来手把手带你走。
 
@@ -11,7 +11,8 @@
 - **定制面试**：开始前输入**目标岗位 + 招聘信息（JD）**，小P 据此生成一套专属面试题（由浅入深，贴近 JD 技术点）再开始面试。
 - **实时题库**：自动爬取面试鸭（mianshiya.com）与 LeetCode（力扣中国站）题库，SQLite 本地存储，按内容哈希增量去重。
 - **定时更新**：APScheduler 调度——启动即抓一次、每天固定时间抓取、按间隔小时抓取，配合**单实例文件锁**防止多进程重复抓取。
-- **流式输出**：回答逐字渲染（`st.write_stream`），不用再等整段回复，体验更流畅。
+- **流式输出**：回答逐字渲染（SSE 流式），不用再等整段回复，体验更流畅。
+- **多用户账号**：注册 / 登录，会话、收藏、定制面试按账号隔离并持久化到 SQLite，刷新或换设备不丢失。
 - **LLM 调用加固**：指数退避重试 + 超时控制 + 请求级日志（耗时/用量），网络抖动不再直接报错。
 - **上下文管理**：对话超出阈值自动把早期内容压缩成摘要，控制 token 成本与延迟。
 - **题库浏览**：按来源 / 难度 / 关键词筛选，一键「出这道题」直接进入模拟面试。
@@ -24,9 +25,10 @@
 
 | 类别 | 技术 |
 |------|------|
-| 前端界面 | Streamlit（文字版）+ 独立语音通话页（FastAPI 托管） |
+| 前端界面 | Vue3 + Vite + Element Plus（聊天 / 语音单页应用） |
+| 后端服务 | FastAPI（统一 REST + WebSocket + 静态托管，单端口） |
 | 大模型 | DeepSeek（OpenAI 兼容 SDK） |
-| 数据存储 | SQLite（WAL + FTS5 全文索引） |
+| 数据存储 | SQLite（WAL + FTS5 全文索引 + 用户/会话表） |
 | 爬虫 | requests（Session 复用 + 重试）+ BeautifulSoup + lxml |
 | 定时任务 | APScheduler（单实例锁） |
 | 测试 | pytest + ruff（GitHub Actions 自动执行） |
@@ -45,9 +47,17 @@
 │   ├── prompts.py             # 角色设定、流程规则、六阶段配置（单一来源）
 │   ├── db.py                  # SQLite 数据层：批量写入、去重、FTS5、版本迁移
 │   ├── scheduler.py           # APScheduler 定时爬取（单实例锁 + 日志轮转）
-│   ├── voice_server.py        # 语音通话服务（FastAPI + WebSocket，托管独立语音通话页）
+│   ├── voice_server.py        # 统一 Web 服务：Vue3 前端 + REST + 语音 WebSocket（单端口）
+│   ├── auth.py                # 账号认证：pbkdf2 散列 + 登录令牌 + FastAPI 依赖
+│   ├── session_store.py       # 会话状态持久化（按用户，SQLite）
+│   ├── voice_store.py         # 定制面试状态（按用户，DB 承载）
+│   ├── routers/
+│   │   ├── auth.py            # 注册 / 登录 / 登出 / 资料
+│   │   ├── session.py         # 会话控制 + SSE 流式聊天
+│   │   ├── questions.py       # 题库浏览 / 收藏 / 导入
+│   │   └── custom.py          # 定制面试生成（SSE 进度）
 │   ├── agent/
-│   │   ├── coach.py           # 会话状态机：双模式 + 上下文压缩 + 流式输出
+│   │   ├── coach.py           # 会话状态机：双模式 + 上下文压缩 + 流式输出 + 序列化
 │   │   └── llm.py             # DeepSeek 封装：重试、超时、流式、结构化输出
 │   ├── crawler/
 │   │   ├── base.py            # SourceAdapter 基类 + 共享 Session 工厂
@@ -56,17 +66,25 @@
 │   │   ├── nowcoder.py        # 牛客适配器（占位，暂未接入）
 │   │   ├── classify.py        # DeepSeek 批量打标签（json_object + 失败重试）
 │   │   └── run.py             # 汇总抓取入口
-│   ├── ui/
-│   │   ├── web.py             # Streamlit Web 入口（虚拟人物、题库浏览、语音页入口）
-│   │   ├── components.py      # 共享 UI 组件：虚拟人物 / 侧边栏 / 题库浏览
-│   │   ├── voice_page.html    # 独立语音通话页（识别/播放/打断/降级，FastAPI 直接托管）
-├── tests/                     # 单元测试（数据层、爬虫、LLM、教练状态机、语音、UI）
+│   └── ui/
+│       └── assets/            # 虚拟人物头像静态资源
+├── frontend/                  # Vue3 前端工程（Vite + Element Plus）
+│   ├── package.json / vite.config.js
+│   ├── src/
+│   │   ├── views/             # LoginView / ChatView / VoiceView
+│   │   ├── components/        # 聊天气泡、题库/定制对话框、欢迎卡片等
+│   │   ├── composables/voice/ # 语音通话引擎（WebSocket/播放/打断/降级）
+│   │   ├── stores/            # Pinia：认证 / 聊天会话
+│   │   ├── api/               # REST + SSE 封装
+│   │   └── router/            # Vue Router（登录守卫）
+│   └── dist/                  # 构建产物（npm run build 生成，服务启动时托管）
+├── tests/                     # 单元测试（数据层、爬虫、LLM、教练状态机、语音、多用户 API）
 ├── scripts/
-│   ├── start.bat              # Windows 一键启动（装依赖 → 选端口 → 开浏览器）
+│   ├── start.bat              # Windows 一键启动（装依赖 → 构建前端 → 启动统一服务）
 │   └── start.sh               # macOS / Linux 启动脚本
 ├── deploy/
-│   ├── Dockerfile             # 容器化部署
-│   └── docker-compose.yml     # Web + 语音服务编排
+│   ├── Dockerfile             # 多阶段构建（Node 构建前端 → Python 运行时）
+│   └── docker-compose.yml     # 统一服务编排
 ├── .github/workflows/ci.yml   # GitHub Actions 测试流水线
 ├── data/
 │   ├── questions.db           # SQLite 题库（当前约 3700+ 题）
@@ -105,21 +123,19 @@ DEEPSEEK_API_KEY=sk-你的key
 
 ### 启动
 
-**方式一（Windows 推荐）**：双击 `scripts/start.bat`，脚本会自动安装依赖、检测端口（8501 被占用时改用 8502）、**同时启动语音通话服务（8765）**并打开浏览器。
+**方式一（Windows 推荐）**：双击 `scripts/start.bat`，脚本会自动安装依赖、**构建 Vue3 前端**（首次需要 Node.js 18+）、检测端口（8765 被占用时改用 8766）并打开浏览器。
 
 **方式二（命令行）**：
 
 ```bash
-# 终端 1：语音通话服务
-python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765
+# 构建前端（首次或前端代码变更后）
+cd frontend && npm install && npm run build && cd ..
 
-# 终端 2：Web 界面
-streamlit run app/ui/web.py
+# 启动统一服务（Vue3 前端 + REST + 语音，单端口）
+python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765
 ```
 
-然后访问 <http://localhost:8501>。
-
-语音通话使用**独立页面**（像打电话一样）：访问 <http://127.0.0.1:8765/>，或在文字版右下角点 **📞** 按钮自动打开。
+然后访问 <http://localhost:8765>，注册账号后即可使用（聊天页 `/`、语音通话 `/voice`）。
 
 **方式三（Docker）**：
 
@@ -127,9 +143,16 @@ streamlit run app/ui/web.py
 cd deploy && docker compose up -d
 ```
 
+## 多用户与账号
+
+- **注册 / 登录**：首次使用需注册账号（用户名 + 密码，密码经 pbkdf2 散列存储）；令牌有效期默认 30 天（`TOKEN_TTL_DAYS`）。
+- **数据隔离**：会话、收藏、定制面试全部按账号隔离并持久化到 SQLite——刷新页面、关闭浏览器、更换设备都不丢失。
+- **题库共享**：爬虫抓取的真实题库为全站共享资源；收藏与面试记录仅自己可见。
+- **语音通话**：`/voice` 页同样需要登录，接通后使用你的账号会话（说「开始面试」切换模拟面试）。
+
 ## 语音通话（像打电话一样）
 
-方案 A：语音通话已从 Streamlit 中拆出，由 `app/voice_server.py`（FastAPI）直接托管独立页面 <http://127.0.0.1:8765/>。文字版右下角的 **📞** 按钮会在新标签页打开它，通话过程与文字版完全隔离，不再受 Streamlit 重跑 / iframe 限制。
+语音通话是 Vue3 前端的一个独立路由 `/voice`（手机式界面），与文字版共用同一服务、同一账号。文字版右下角的 **📞** 按钮会跳转到它，通话过程与文字版完全隔离。
 
 - **接通即问候**：点击绿色「接通」按钮后，小P 会像真实电话一样先开口问候，你直接说话即可。
 - **边说边答**：浏览器把麦克风 PCM 音频流实时推给服务端**阿里云 Paraformer 流式识别**（zh-CN），识别出句子立刻发给语音服务；DeepSeek 流式回复逐字推回，服务端把句子**合并成 2-3 句一段**（连接数少、句间语气连贯）并用 edge-tts 边合成边推送，小音频块**聚合成约 2 秒的大单元**再下发，浏览器拿到第一块就开始播报（零间隙衔接），既快又稳，不等整段生成完。
@@ -139,7 +162,7 @@ cd deploy && docker compose up -d
 - **在线合成熔断**：edge-tts 连续失败 2 次后自动暂停在线合成 60 秒（期间直接走本地语音），避免网络抖动时每次回复都干等超时；到期自动恢复在线音色。
 - **双模式**：接通后直接提问走**辅导答疑**；接通后说"开始面试 / 模拟面试"，自动切换为**模拟面试**（小P 出题 → 你回答 → 点评追问）。
 - **随时挂断**：通话中按钮变为红色「挂断」，点击立即停止播报并断开；关闭页面也会自动停止声音。
-- **环境要求**：语音识别由服务端阿里云 Paraformer 完成，需要在 `.env` 配置 `DASHSCOPE_API_KEY`（与 CosyVoice 同 Key）；浏览器请用 Chrome 或 Edge 并直接访问 `127.0.0.1:8765`（本机地址属于安全上下文，麦克风权限正常）；需先启动 `voice_server`（`scripts/start.bat` 会自动启动）。
+- **环境要求**：语音识别由服务端阿里云 Paraformer 完成，需要在 `.env` 配置 `DASHSCOPE_API_KEY`（与 CosyVoice 同 Key）；浏览器请用 Chrome 或 Edge（本机地址属于安全上下文，麦克风权限正常）；需已登录账号。
 
 通话链路：浏览器（识别/分块播放/打断）⇄ WebSocket ⇄ `app.voice_server`（会话状态机 + DeepSeek 流式回复 + edge-tts 音频块流式合成）。
 
@@ -226,6 +249,9 @@ python -m app.crawler.classify --limit 50
 | `CRAWL_WORKERS` | `3` | 面试鸭分类并行线程数 |
 | `LEETCODE_CACHE_HOURS` | `72` | LeetCode 响应缓存有效期（小时） |
 | `DB_TIMEOUT_SECONDS` | `10` | SQLite busy_timeout（秒） |
+| `APP_HOST` | `127.0.0.1` | 统一服务监听地址（兼容旧 `VOICE_HOST`） |
+| `APP_PORT` | `8765` | 统一服务端口（兼容旧 `VOICE_PORT`） |
+| `TOKEN_TTL_DAYS` | `30` | 登录令牌有效期（天） |
 | `VOICE_TTS` | `edge` | 语音合成方式：`edge`=edge-tts，`cosyvoice`=阿里云百炼 CosyVoice，`local`=浏览器本地语音 |
 | `VOICE_NAME` | `zh-CN-XiaoxiaoNeural` | edge-tts 音色（微软晓晓，甜美自然） |
 | `VOICE_RATE` | `+0%` | 播报语速（如 `-10%` 更慢） |
@@ -238,7 +264,6 @@ python -m app.crawler.classify --limit 50
 | `COSYVOICE_SAMPLE_RATE` | `24000` | 输出采样率 |
 | `COSYVOICE_RATE` | `1.0` | 语速（0.5~2.0） |
 | `COSYVOICE_PITCH` | `1.0` | 音调（0.5~2.0，略大于 1 更明亮甜美） |
-| `WEB_URL` | `http://localhost:8501` | 文字版入口地址（语音通话页"← 文字版"链接用） |
 | `DISABLE_SCHEDULER` | 未设置 | 设为 `1` 可禁用后台爬取（测试/多实例部署用） |
 
 ## 运行测试
@@ -271,11 +296,11 @@ ruff check .
 **3. LeetCode 抓取报 403**  
 无需处理：接口失败会自动重试，仍失败则降级使用本地缓存（`data/leetcode_cache.json`，有效期默认 72 小时），不会让整个爬取链路中断。
 
-**4. 8501 端口被占用**  
-`scripts/start.bat` 会自动改用 8502，也可手动指定端口启动。
+**4. 8765 端口被占用**  
+`scripts/start.bat` 会自动改用 8766，也可手动指定端口启动。
 
 **5. 语音输入不工作**  
-请使用 Chrome 或 Edge 浏览器，并确认语音服务已启动：访问 <http://127.0.0.1:8765/health> 应返回 `{"status":"ok"}`（`scripts/start.bat` 会自动启动）。语音通话请直接打开 <http://127.0.0.1:8765/>（不要在 iframe 内使用）；接通后状态条会显示"聆听中 / 小P思考中 / 播报中"。
+请使用 Chrome 或 Edge 浏览器、已登录账号，并确认统一服务已启动：访问 <http://127.0.0.1:8765/health> 应返回 `{"status":"ok"}`（`scripts/start.bat` 会自动启动）。语音通话请访问 <http://localhost:8765/voice>；接通后状态条会显示"聆听中 / 小P思考中 / 播报中"。
 
 **6. 多个实例同时启动会重复抓取吗**  
 不会。`data/scheduler.lock` 单实例锁保证只有第一个进程运行调度器；部署多实例时建议只让一个实例启用调度（其余设 `DISABLE_SCHEDULER=1`）。

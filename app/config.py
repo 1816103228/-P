@@ -34,11 +34,19 @@ CRAWL_PAGES_PER_CATEGORY = int(os.getenv("CRAWL_PAGES_PER_CATEGORY", "15"))
 CRAWL_REQUEST_DELAY = float(os.getenv("CRAWL_REQUEST_DELAY", "0.3"))
 CRAWL_WORKERS = int(os.getenv("CRAWL_WORKERS", "3"))
 LEETCODE_CACHE_HOURS = int(os.getenv("LEETCODE_CACHE_HOURS", "72"))
+# 力扣算法题默认关闭抓取（算法题已从题库移除）；需要时置 CRAWL_LEETCODE=1 开启
+CRAWL_LEETCODE = os.getenv("CRAWL_LEETCODE", "0").strip().lower() in ("1", "true", "yes")
 
 # ---- 懒加载补抓（定制面试零命中时按需抓取）----
 LAZY_CRAWL_PAGES = int(os.getenv("LAZY_CRAWL_PAGES", "3"))  # 每分类抓列表页数
 LAZY_CRAWL_LIMIT = int(os.getenv("LAZY_CRAWL_LIMIT", "40"))  # 每分类最多入库条数
 LAZY_CRAWL_TIMEOUT = float(os.getenv("LAZY_CRAWL_TIMEOUT", "30"))  # 补抓总超时（秒）
+
+# ---- 数据清洗（clean_status 状态机：raw→rule_cleaned→semantic_cleaned→ready）----
+CLEAN_RULE_VERSION = os.getenv("CLEAN_RULE_VERSION", "2026.08.17").strip()  # 清洗规则版本号，升级后旧版本数据重洗
+CLEAN_SEMANTIC_BATCH_LIMIT = int(
+    os.getenv("CLEAN_SEMANTIC_BATCH_LIMIT", "100")
+)  # 单次语义清洗最多打标条数（控制 LLM 成本）
 
 # ---- 语音通话服务 ----
 VOICE_HOST = os.getenv("VOICE_HOST", "127.0.0.1").strip()
@@ -77,6 +85,15 @@ COSYVOICE_PITCH = float(os.getenv("COSYVOICE_PITCH", "1.0"))
 
 # ---- Web 文字版入口（语音通话页"返回文字版"链接用）----
 WEB_URL = os.getenv("WEB_URL", "http://localhost:8501").strip().rstrip("/")
+
+# ---- 统一 Web 服务（Vue3 前端 + REST + 语音，单端口）----
+# 多用户改造后 Streamlit 退役，FastAPI 同时托管静态前端与所有 API。
+# 兼容旧配置：新键 APP_PORT 优先，缺省回退 VOICE_PORT。
+APP_HOST = os.getenv("APP_HOST", os.getenv("VOICE_HOST", "127.0.0.1")).strip()
+APP_PORT = int(os.getenv("APP_PORT", os.getenv("VOICE_PORT", "8765")))
+
+# ---- 登录令牌有效期（天）----
+TOKEN_TTL_DAYS = int(os.getenv("TOKEN_TTL_DAYS", "30"))
 
 
 def ensure_data_dir() -> None:

@@ -41,9 +41,9 @@ class _AsrCallback(RecognitionCallback):
         on_error=None,
     ) -> None:
         self._loop = loop
-        self._on_sentence = on_sentence  # async callable(text)：句子结束
-        self._on_partial = on_partial  # async callable(text)：中间结果（供提前打断）
-        self._on_error = on_error  # async callable(code, message)
+        self._on_sentence = on_sentence  # 异步回调（text：识别文本），句子结束
+        self._on_partial = on_partial  # 异步回调（text：识别文本），中间结果（供提前打断）
+        self._on_error = on_error  # 异步回调（code, message：错误码与错误信息）
 
     def on_event(self, result) -> None:
         try:

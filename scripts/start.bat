@@ -35,32 +35,55 @@ if not defined PIP_OK (
 )
 echo [OK] 依赖安装完成
 
-echo [2/6] 检测端口...
-
-netstat -ano | findstr ":8501 " >nul 2>&1
-set "PORT=8501"
-if not errorlevel 1 (
-    echo [提示] 8501 端口已被占用，改用 8502
-    set "PORT=8502"
+echo [2/6] 构建前端（Vue3）...
+if not exist "frontend\dist\index.html" (
+    where node >nul 2>&1
+    if errorlevel 1 (
+        echo [错误] 未检测到 Node.js，且前端尚未构建。
+        echo        请先安装 Node.js 18+，然后在 frontend 目录执行：
+        echo        npm install ^&^& npm run build
+        pause
+        exit /b 1
+    )
+    pushd frontend
+    call npm install --silent
+    if errorlevel 1 (
+        echo [警告] npm install 失败，改用国内镜像重试...
+        call npm install --silent --registry=https://registry.npmmirror.com
+    )
+    call npm run build
+    if errorlevel 1 (
+        echo [错误] 前端构建失败，请查看 frontend 目录报错
+        popd
+        pause
+        exit /b 1
+    )
+    popd
+) else (
+    echo [提示] 前端已构建，跳过（如需重建请删除 frontend\dist）
 )
 
-echo [3/6] 启动语音通话服务...
-set "WEB_URL=http://localhost:!PORT!"
-start "MianShiGuanXiaoP-Voice" cmd /c "set WEB_URL=http://localhost:!PORT!&&python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765"
+echo [3/6] 检测端口...
+netstat -ano | findstr ":8765 " >nul 2>&1
+set "PORT=8765"
+if not errorlevel 1 (
+    echo [提示] 8765 端口已被占用，改用 8766
+    set "PORT=8766"
+)
 
-echo [4/6] 启动 Web 服务...
-start "MianShiGuanXiaoP-Server" python -m streamlit run app/ui/web.py --server.headless true --server.port !PORT!
+echo [4/6] 启动统一服务（文字版 + 语音通话 同一端口）...
+start "MianShiGuanXiaoP-Server" cmd /c "python -m uvicorn app.voice_server:app --host 127.0.0.1 --port !PORT!"
 
 echo [5/6] 等待服务就绪...
 timeout /t 5 /nobreak >nul
 
-echo [6/6] 检查语音服务...
-powershell -NoProfile -Command "try{$r=Invoke-WebRequest -Uri 'http://127.0.0.1:8765/health' -UseBasicParsing -TimeoutSec 3; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}"
+echo [6/6] 检查服务...
+set "APP_PORT=!PORT!"
+powershell -NoProfile -Command "try{$r=Invoke-WebRequest -Uri ('http://127.0.0.1:'+$env:APP_PORT+'/health') -UseBasicParsing -TimeoutSec 3; if($r.StatusCode -eq 200){exit 0}else{exit 1}}catch{exit 1}"
 if errorlevel 1 (
-    echo [警告] 语音服务可能未启动成功（8765 端口），文字版仍可使用
-    echo        请查看「MianShiGuanXiaoP-Voice」窗口中的报错
+    echo [警告] 服务可能未启动成功，请查看「MianShiGuanXiaoP-Server」窗口中的报错
 ) else (
-    echo [OK] 语音服务已就绪
+    echo [OK] 服务已就绪
 )
 
 echo 正在打开浏览器: http://localhost:!PORT!
@@ -69,9 +92,8 @@ start "" "http://localhost:!PORT!"
 echo.
 echo ============================================
 echo   服务已全部启动
-echo   文字版:   http://localhost:!PORT!
-echo   语音通话: http://127.0.0.1:8765/
-echo   （文字版右下角的电话按钮也会打开语音通话页）
-echo   停止: 关闭「MianShiGuanXiaoP-Server」与「MianShiGuanXiaoP-Voice」窗口
+echo   文字版:   http://localhost:!PORT!/
+echo   语音通话: http://localhost:!PORT!/voice
+echo   停止: 关闭「MianShiGuanXiaoP-Server」窗口
 echo ============================================
 pause

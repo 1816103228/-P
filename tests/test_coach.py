@@ -6,6 +6,7 @@ from pathlib import Path
 from unittest import mock
 
 from app import config, db
+from app.agent import coach
 from app.agent.coach import InterviewSession
 
 FAKE_QUESTION = {
@@ -201,6 +202,70 @@ class CoachFlowTests(unittest.TestCase):
             s.handle("我的回答")
             s.handle(LONG_ANSWER)
         self.assertEqual(report_kwargs.get("model"), "deepseek-reasoner")
+
+
+class ReferenceAnswerTests(unittest.TestCase):
+    """点评兜底：参考答案注入与 mianshiya 单题同步补答案。"""
+
+    def test_existing_answer_returned(self):
+        row = {"id": 1, "source": "mianshiya", "source_id": "42", "answer": "标准答案"}
+        self.assertEqual(coach._ensure_reference_answer(row), "标准答案")
+
+    def test_non_mianshiya_no_answer_returns_none(self):
+        row = {"id": 2, "source": "定制", "source_id": None, "answer": None}
+        self.assertIsNone(coach._ensure_reference_answer(row))
+
+    def test_mianshiya_backfills_on_demand(self):
+        """缺答案的 mianshiya 题：同步抓一次详情补答案。"""
+        row = {"id": 3, "source": "mianshiya", "source_id": "42", "answer": None}
+        with (
+            mock.patch("app.crawler.mianshiya.MianShiYaAdapter") as M,
+            mock.patch(
+                "app.agent.coach.db.get_question_by_id",
+                return_value={"id": 3, "answer": "补到的答案"},
+            ),
+        ):
+            M.return_value.fetch_details_for.return_value = {"total": 1, "updated": 1}
+            got = coach._ensure_reference_answer(row)
+        self.assertEqual(got, "补到的答案")
+        M.return_value.fetch_details_for.assert_called_once_with(["42"])
+
+    def test_mianshiya_backfill_failure_returns_none(self):
+        row = {"id": 3, "source": "mianshiya", "source_id": "42", "answer": None}
+        with mock.patch(
+            "app.crawler.mianshiya.MianShiYaAdapter", side_effect=RuntimeError("boom")
+        ):
+            self.assertIsNone(coach._ensure_reference_answer(row))
+
+    def test_comment_injects_reference_answer(self):
+        """点评环节把本题参考答案拼进点评 prompt（注入集成）。"""
+        q = dict(FAKE_QUESTION, answer="GIL 是全局解释器锁，限制多线程并行执行。")
+        s = InterviewSession("mock")
+        with (
+            mock.patch("app.agent.coach._pick_question", return_value=q),
+            mock.patch("app.agent.coach.llm.chat", return_value="点评回复"),
+        ):
+            s.handle("自我介绍：我是张三，3年后端")
+            s.handle("我的回答")
+        comment = next(
+            m
+            for m in s.messages
+            if m["role"] == "user" and "点评" in m["content"] and "参考答案" in m["content"]
+        )
+        self.assertIn("GIL 是全局解释器锁", comment["content"])
+
+    def test_comment_without_answer_no_fetch(self):
+        """无答案的非 mianshiya 定制题：点评不注入参考答案，也不触发抓取。"""
+        q = dict(FAKE_QUESTION, source="定制", answer=None)
+        s = InterviewSession("mock")
+        with (
+            mock.patch("app.agent.coach._pick_question", return_value=q),
+            mock.patch("app.agent.coach.llm.chat", return_value="点评回复"),
+            mock.patch("app.crawler.mianshiya.MianShiYaAdapter") as M,
+        ):
+            s.handle("自我介绍：我是张三")
+            s.handle("我的回答")
+        M.assert_not_called()
 
 
 if __name__ == "__main__":

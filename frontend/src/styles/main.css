@@ -1,0 +1,622 @@
+/* ===== 面试官小P · 全局样式（保留原 Streamlit / 语音页视觉）===== */
+* {
+  box-sizing: border-box;
+}
+
+html,
+body,
+#app {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  font-family:
+    "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Microsoft YaHei",
+    system-ui, -apple-system, sans-serif;
+  background: radial-gradient(1100px 560px at 50% -10%, #e9f0ff 0%, #f8fafd 50%, #f2f5fa 100%);
+  background-attachment: fixed;
+  color: #243352;
+  -webkit-font-smoothing: antialiased;
+}
+
+::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+::-webkit-scrollbar-thumb {
+  background: #cdd7ea;
+  border-radius: 4px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #b7c3dd;
+}
+
+/* ---------- 品牌头部 ---------- */
+.brand {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.brand-center {
+  justify-content: center;
+}
+.brand-avatar {
+  width: 56px;
+  height: 56px;
+  flex: 0 0 56px;
+  border-radius: 50%;
+  overflow: hidden;
+  border: 2px solid #fff;
+  box-shadow: 0 4px 14px rgba(31, 58, 102, 0.16);
+}
+.brand-avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 28%;
+  display: block;
+}
+.brand-name {
+  font-size: 19px;
+  font-weight: 700;
+  color: #1e2c46;
+  letter-spacing: 0.4px;
+}
+.brand-status {
+  margin-top: 3px;
+  font-size: 12px;
+  color: #3f8f63;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+}
+.brand-status i {
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #22c55e;
+  box-shadow: 0 0 0 3px rgba(34, 197, 94, 0.14);
+  animation: dp 2.2s ease-in-out infinite;
+}
+@keyframes dp {
+  0%,
+  100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.35;
+  }
+}
+.chat-mode {
+  font-size: 13px;
+  color: #7b879c;
+  letter-spacing: 0.4px;
+}
+
+/* ---------- 欢迎区 ---------- */
+.hero {
+  text-align: center;
+  margin: 12px 0 10px;
+}
+.hero-title {
+  font-size: 21px;
+  font-weight: 700;
+  color: #1e2c46;
+  letter-spacing: 0.5px;
+}
+.hero-sub {
+  margin-top: 6px;
+  font-size: 13px;
+  color: #7b879c;
+  letter-spacing: 0.5px;
+}
+.qcard {
+  background: #fff;
+  border: 1px solid #e7edf6;
+  border-radius: 16px;
+  padding: 14px 12px 12px;
+  text-align: center;
+  box-shadow: 0 2px 10px rgba(20, 40, 80, 0.05);
+  margin-bottom: 10px;
+  transition: transform 0.15s, box-shadow 0.15s;
+}
+.qcard:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 16px rgba(20, 40, 80, 0.1);
+}
+.qicon {
+  font-size: 26px;
+  line-height: 1;
+}
+.qtitle {
+  margin-top: 6px;
+  font-size: 15px;
+  font-weight: 700;
+  color: #243352;
+}
+.qdesc {
+  margin-top: 4px;
+  font-size: 12px;
+  color: #8792a7;
+}
+
+/* ---------- 聊天气泡 ---------- */
+.msg {
+  display: flex;
+  margin: 14px 0;
+}
+.msg.user {
+  justify-content: flex-end;
+}
+.msg.user .bubble {
+  background: linear-gradient(135deg, #4f6ef7, #6482f8);
+  color: #fff;
+  padding: 10px 15px;
+  border-radius: 16px 16px 5px 16px;
+  font-size: 15px;
+  line-height: 1.7;
+  box-shadow: 0 3px 10px rgba(79, 110, 247, 0.22);
+  word-break: break-word;
+  max-width: 82%;
+  white-space: pre-wrap;
+}
+.msg.assistant {
+  justify-content: flex-start;
+}
+.msg.assistant .bubble {
+  background: rgba(255, 255, 255, 0.92);
+  border: 1px solid #e8edf6;
+  border-radius: 16px 16px 16px 5px;
+  padding: 14px 18px;
+  box-shadow: 0 1px 4px rgba(20, 40, 80, 0.05);
+  max-width: 96%;
+  font-size: 15px;
+  line-height: 1.7;
+}
+.msg.assistant .bubble p {
+  margin: 0 0 0.4em;
+}
+.msg.assistant .bubble p:last-child {
+  margin-bottom: 0;
+}
+.msg.assistant .bubble pre {
+  background: #f6f8fb;
+  border: 1px solid #e5eaf3;
+  border-radius: 8px;
+  padding: 10px 12px;
+  overflow-x: auto;
+}
+.msg.assistant .bubble code {
+  font-family: ui-monospace, Consolas, Menlo, monospace;
+}
+.msg.assistant .avatar {
+  width: 34px;
+  height: 34px;
+  flex: 0 0 34px;
+  border-radius: 50%;
+  overflow: hidden;
+  margin-right: 10px;
+  border: 2px solid #fff;
+  box-shadow: 0 2px 8px rgba(31, 58, 102, 0.14);
+}
+.msg.assistant .avatar img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+  object-position: center 28%;
+}
+
+/* 打字指示 */
+.typing-dots {
+  display: inline-flex;
+  gap: 4px;
+  align-items: center;
+  padding: 2px 0;
+}
+.typing-dots i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: #9db2e8;
+  animation: tp 1s ease-in-out infinite;
+}
+.typing-dots i:nth-child(2) {
+  animation-delay: 0.15s;
+}
+.typing-dots i:nth-child(3) {
+  animation-delay: 0.3s;
+}
+@keyframes tp {
+  0%,
+  100% {
+    opacity: 0.35;
+    transform: translateY(0);
+  }
+  50% {
+    opacity: 1;
+    transform: translateY(-3px);
+  }
+}
+
+/* ---------- 侧边栏 ---------- */
+.side-title {
+  font-size: 13px;
+  font-weight: 700;
+  color: #56637a;
+  letter-spacing: 1px;
+  margin-bottom: 10px;
+}
+.stat-card {
+  background: #fff;
+  border: 1px solid #e7edf6;
+  border-radius: 12px;
+  padding: 10px 4px;
+  text-align: center;
+  box-shadow: 0 1px 4px rgba(20, 40, 80, 0.04);
+}
+.stat-num {
+  font-size: 19px;
+  font-weight: 700;
+  color: #243352;
+}
+.stat-label {
+  margin-top: 2px;
+  font-size: 11px;
+  color: #8a95aa;
+}
+.side-note {
+  font-size: 12px;
+  color: #7b879c;
+  margin: 12px 0 0;
+}
+.rev-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 6px 8px;
+  margin: 4px 0;
+  background: #fff;
+  border: 1px solid #eef1f7;
+  border-radius: 10px;
+  font-size: 12px;
+  color: #56637a;
+}
+.rev-score {
+  font-weight: 700;
+  color: #4f6ef7;
+}
+.rev-meta {
+  color: #8a95aa;
+}
+.voice-ready {
+  background: linear-gradient(135deg, #eef3ff, #e6edff);
+  border: 1px solid #cdd9f7;
+  border-radius: 12px;
+  padding: 10px 14px;
+  font-size: 13px;
+  color: #33508c;
+}
+
+/* ---------- 语音通话页（手机式）---------- */
+.vphone {
+  width: min(480px, 100%);
+  min-height: 100dvh;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  padding: 18px 18px calc(110px + env(safe-area-inset-bottom));
+  position: relative;
+  color: #f4f6fb;
+}
+.vphone::before {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background: radial-gradient(1200px 600px at 20% -10%, #3b4f8f 0%, #22304f 45%, #141c30 100%);
+}
+.vphone::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: -1;
+  background:
+    radial-gradient(520px 300px at 85% -5%, rgba(120, 150, 255, 0.28), transparent 60%),
+    radial-gradient(420px 260px at -10% 30%, rgba(255, 120, 160, 0.14), transparent 60%),
+    radial-gradient(600px 340px at 50% 115%, rgba(47, 191, 113, 0.12), transparent 60%);
+}
+.vtop {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 8px;
+}
+.vtop .back {
+  color: #9fb2d9;
+  text-decoration: none;
+  font-size: 13px;
+  cursor: pointer;
+}
+.vtop .back:hover {
+  color: #fff;
+}
+.vtop .title {
+  font-size: 17px;
+  font-weight: 700;
+  letter-spacing: 1px;
+}
+.vmode {
+  font-size: 12px;
+  color: #ffd166;
+  background: rgba(255, 209, 102, 0.12);
+  border: 1px solid rgba(255, 209, 102, 0.35);
+  padding: 2px 10px;
+  border-radius: 999px;
+  white-space: nowrap;
+}
+.vavatar {
+  display: flex;
+  justify-content: center;
+  padding: 8px 0 0;
+}
+.vavatar img {
+  width: 230px;
+  height: 230px;
+  object-fit: cover;
+  object-position: center 28%;
+  border-radius: 50%;
+  border: 3px solid rgba(255, 255, 255, 0.22);
+  box-shadow: 0 16px 42px rgba(10, 16, 34, 0.55);
+  display: block;
+}
+.vavatar.glow img {
+  filter: drop-shadow(0 0 28px rgba(109, 134, 245, 0.75));
+  transition: filter 0.35s ease;
+}
+.av-fig {
+  animation: br 4.5s ease-in-out infinite;
+}
+@keyframes br {
+  0%,
+  100% {
+    transform: translateY(0) rotate(0deg);
+  }
+  25% {
+    transform: translateY(-5px) rotate(-0.5deg);
+  }
+  75% {
+    transform: translateY(-3px) rotate(0.5deg);
+  }
+}
+.vstatusrow {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 10px;
+  margin-top: 16px;
+}
+.vstatus {
+  min-width: 170px;
+  text-align: center;
+  font-size: 14px;
+  color: #d7e0f5;
+  background: rgba(255, 255, 255, 0.08);
+  border: 1px solid rgba(255, 255, 255, 0.14);
+  padding: 7px 18px;
+  border-radius: 999px;
+  backdrop-filter: blur(8px);
+}
+.vstatus.busy {
+  color: #ffd166;
+  border-color: rgba(255, 209, 102, 0.45);
+}
+.vstatus.interruptible {
+  cursor: pointer;
+  border-color: rgba(255, 209, 102, 0.75);
+  text-decoration: underline dotted;
+}
+.vtimer {
+  font-size: 13px;
+  color: #9fb2d9;
+  font-variant-numeric: tabular-nums;
+  background: rgba(255, 255, 255, 0.06);
+  border: 1px solid rgba(255, 255, 255, 0.12);
+  padding: 6px 12px;
+  border-radius: 999px;
+  min-width: 58px;
+  text-align: center;
+}
+.vmicrow {
+  display: none;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  margin-top: 10px;
+  font-size: 12px;
+  color: #9fb2d9;
+}
+.vmicrow.on {
+  display: flex;
+}
+.vmicbar {
+  width: 130px;
+  height: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  border-radius: 3px;
+  overflow: hidden;
+}
+.vmicbar i {
+  display: block;
+  height: 100%;
+  width: 0;
+  background: linear-gradient(90deg, #4f6ef7, #2fbf71);
+  transition: width 0.06s linear;
+}
+.vmicTest {
+  border: 1px solid rgba(255, 255, 255, 0.25);
+  background: rgba(255, 255, 255, 0.08);
+  color: #d7e0f5;
+  border-radius: 999px;
+  padding: 3px 12px;
+  font-size: 12px;
+  cursor: pointer;
+}
+.vmicTest:hover {
+  border-color: rgba(255, 255, 255, 0.5);
+  color: #fff;
+}
+.vwave {
+  display: none;
+  justify-content: center;
+  align-items: center;
+  gap: 5px;
+  height: 22px;
+  margin-top: 12px;
+}
+.vwave.on {
+  display: flex;
+}
+.vwave i {
+  width: 4px;
+  height: 7px;
+  border-radius: 2px;
+  background: #6e8bff;
+  animation: wv 0.85s ease-in-out infinite;
+}
+.vwave i:nth-child(2) {
+  animation-delay: 0.12s;
+}
+.vwave i:nth-child(3) {
+  animation-delay: 0.24s;
+}
+.vwave i:nth-child(4) {
+  animation-delay: 0.36s;
+}
+.vwave i:nth-child(5) {
+  animation-delay: 0.48s;
+}
+@keyframes wv {
+  0%,
+  100% {
+    height: 6px;
+    opacity: 0.5;
+  }
+  50% {
+    height: 20px;
+    opacity: 1;
+  }
+}
+.vtranscript {
+  flex: 1;
+  margin-top: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 4px 2px;
+  min-height: 120px;
+  max-height: 44vh;
+}
+.vbubble {
+  max-width: 84%;
+  padding: 10px 14px;
+  border-radius: 16px;
+  font-size: 14px;
+  line-height: 1.65;
+  white-space: pre-wrap;
+  word-break: break-word;
+  animation: fadeIn 0.25s ease;
+}
+@keyframes fadeIn {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
+.vbubble.user {
+  align-self: flex-end;
+  background: linear-gradient(135deg, #5b7cff, #4f6ef7);
+  color: #fff;
+  border-bottom-right-radius: 4px;
+  box-shadow: 0 4px 14px rgba(79, 110, 247, 0.28);
+}
+.vbubble.assistant {
+  align-self: flex-start;
+  background: rgba(255, 255, 255, 0.1);
+  color: #eef2fb;
+  border-bottom-left-radius: 4px;
+  backdrop-filter: blur(8px);
+}
+.vbubble.hint {
+  align-self: center;
+  background: transparent;
+  color: #8fa3cc;
+  font-size: 12px;
+  padding: 2px 6px;
+  max-width: 92%;
+}
+.vfooter {
+  position: fixed;
+  left: 0;
+  right: 0;
+  bottom: calc(26px + env(safe-area-inset-bottom));
+  display: flex;
+  justify-content: center;
+  pointer-events: none;
+}
+#callBtn {
+  pointer-events: auto;
+  width: 70px;
+  height: 70px;
+  border-radius: 50%;
+  border: none;
+  cursor: pointer;
+  font-size: 26px;
+  color: #fff;
+  background: #2fbf71;
+  box-shadow: 0 6px 24px rgba(47, 191, 113, 0.45);
+  transition: all 0.25s;
+}
+#callBtn:hover {
+  transform: scale(1.07);
+}
+#callBtn .lbl {
+  display: block;
+  font-size: 11px;
+  font-weight: 600;
+  margin-top: -3px;
+  letter-spacing: 1px;
+}
+#callBtn.on {
+  background: #e74c3c;
+  animation: micPulse 0.9s ease-in-out infinite;
+}
+@keyframes micPulse {
+  0%,
+  100% {
+    box-shadow: 0 0 0 0 rgba(231, 76, 60, 0.45);
+  }
+  50% {
+    box-shadow: 0 0 0 16px rgba(231, 76, 60, 0);
+  }
+}
+
+/* 语音页调试面板 */
+.vdbg {
+  position: fixed;
+  left: 8px;
+  bottom: 8px;
+  z-index: 999;
+  max-width: 48vw;
+  font: 11px/1.5 ui-monospace, Consolas, monospace;
+  color: #9fe8b2;
+  background: rgba(10, 16, 34, 0.94);
+  padding: 6px 8px;
+  border-radius: 6px;
+  white-space: pre-wrap;
+}

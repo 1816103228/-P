@@ -64,6 +64,18 @@ def _parse_crawl_time(value: str) -> tuple[int, int]:
         return 2, 0
 
 
+def _clean_job() -> None:
+    """定时清洗：抓取后跑统一清洗（规则全量 + 语义增量一批，成本可控）。"""
+    logger.info("定时清洗任务开始")
+    try:
+        from app.crawler.clean import run_clean
+
+        stats = run_clean()
+        logger.info("定时清洗任务完成: %s", stats)
+    except Exception as e:
+        logger.exception("定时清洗任务失败: %s", e)
+
+
 def _crawl_job() -> None:
     logger.info("定时爬取任务开始")
     try:
@@ -71,6 +83,8 @@ def _crawl_job() -> None:
         logger.info("定时爬取任务完成: %s", results)
     except Exception as e:
         logger.exception("定时爬取任务失败: %s", e)
+    # 抓取完成后紧跟一次清洗（新入库数据默认 raw，需尽快洗到可用状态）
+    _clean_job()
 
 
 def start_scheduler() -> BackgroundScheduler | None:

@@ -8,20 +8,24 @@ import unittest
 
 import requests
 
+#: 统一服务端口（scripts/start.bat / start.sh 启动，见 config.APP_PORT）
+SERVICE_URL = "http://localhost:8765"
+
 
 class LaunchChecks(unittest.TestCase):
-    """验证 scripts/start.bat 修复后的关键链路：服务可达 + 数据可用。"""
+    """验证启动脚本关键链路：服务可达 + 数据可用。"""
 
     def test_service_http_200(self):
-        """服务在 8501 端口返回 HTTP 200（对应 bat 中 --server.port 8501 的启动）。
+        """统一服务在 8765 端口返回 HTTP 200（Vue3 前端 + REST + 语音）。
 
         服务未运行时自动跳过（先运行 scripts/start.bat 再跑全套验证）。
         """
         try:
-            r = requests.get("http://localhost:8501", timeout=3)
+            r = requests.get(SERVICE_URL + "/health", timeout=3)
         except requests.RequestException:
-            self.skipTest("服务未运行，跳过（请先运行 scripts/start.bat 或启动 streamlit）")
+            self.skipTest("服务未运行，跳过（请先运行 scripts/start.bat 或启动统一服务）")
         self.assertEqual(r.status_code, 200)
+        self.assertEqual(r.json()["status"], "ok")
 
     def test_db_accessible(self):
         """数据库可正常读取（UI 侧边栏题库统计依赖）。"""

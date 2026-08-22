@@ -18,9 +18,6 @@ os.environ["DISABLE_SCHEDULER"] = "1"
 from app import config, db
 from app.agent.coach import InterviewSession
 
-# AppTest.from_file 的相对路径按调用文件解析，这里显式指向 Web 入口
-WEB_ENTRY = Path(__file__).resolve().parents[1] / "app" / "ui" / "web.py"
-
 
 class QuestionBankChecks(unittest.TestCase):
     """数据层与教练层的新增能力。"""
@@ -194,11 +191,96 @@ class BankFeatureDbTests(unittest.TestCase):
         self.assertEqual(db.search_questions(company="不存在的公司"), [])
 
 
-class UITest(unittest.TestCase):
-    """Web 界面渲染与空题库兜底检查（AppTest/状态机，不依赖真实题库）。"""
+class ApiAndFlowTests(unittest.TestCase):
+    """多用户 REST API 与核心流程（TestClient + 临时库 + mock LLM，不依赖真实题库）。"""
 
     def setUp(self):
-        db.init_db()  # 兜底：确保界面可读取题库统计
+        # 隔离数据库，避免污染真实 data/questions.db
+        self._tmpdir = tempfile.TemporaryDirectory()
+        self._db_path = Path(self._tmpdir.name) / "test_api.db"
+        self._patch = mock.patch.object(config, "DB_PATH", self._db_path)
+        self._patch.start()
+        db.init_db()
+        from app import auth
+
+        db.create_user("api_tester", auth.hash_password("pass123456"))
+        self.user = db.get_user_by_username("api_tester")
+        self.token = auth.issue_token(self.user["id"])
+        self.headers = {"Authorization": f"Bearer {self.token}"}
+
+    def tearDown(self):
+        self._patch.stop()
+        self._tmpdir.cleanup()
+
+    def test_auth_required(self):
+        """未登录访问受保护接口返回 401。"""
+        from app.voice_server import app
+        from fastapi.testclient import TestClient
+
+        with TestClient(app) as client:
+            self.assertEqual(client.get("/api/session").status_code, 401)
+            self.assertEqual(client.get("/api/questions").status_code, 401)
+            self.assertEqual(client.get("/api/auth/me").status_code, 401)
+
+    def test_register_login_flow(self):
+        """注册→自动登录→me→重复注册冲突→错误密码 401。"""
+        from app.voice_server import app
+        from fastapi.testclient import TestClient
+
+        with TestClient(app) as client:
+            r = client.post(
+                "/api/auth/register",
+                json={"username": "newbie", "password": "secret123", "nickname": "新手"},
+            )
+            self.assertEqual(r.status_code, 200)
+            token = r.json()["token"]
+            h = {"Authorization": f"Bearer {token}"}
+            self.assertEqual(client.get("/api/auth/me", headers=h).json()["nickname"], "新手")
+            self.assertEqual(
+                client.post(
+                    "/api/auth/register", json={"username": "newbie", "password": "x123456"}
+                ).status_code,
+                409,
+            )
+            self.assertEqual(
+                client.post(
+                    "/api/auth/login", json={"username": "newbie", "password": "wrong"}
+                ).status_code,
+                401,
+            )
+
+    def test_question_browse_and_favorite(self):
+        """题库浏览 + 按用户收藏/取消收藏。"""
+        db.upsert_question(
+            source="mianshiya",
+            title="什么是 GIL",
+            answer="全局解释器锁",
+            tags=["Python基础"],
+            difficulty="简单",
+        )
+        from app.voice_server import app
+        from fastapi.testclient import TestClient
+
+        with TestClient(app) as client:
+            r = client.get("/api/questions", headers=self.headers)
+            self.assertEqual(r.status_code, 200)
+            items = r.json()["items"]
+            self.assertTrue(len(items) >= 1)
+            qid = items[0]["id"]
+            self.assertEqual(
+                client.post(f"/api/favorites/{qid}", headers=self.headers).status_code, 200
+            )
+            fav = client.get(
+                "/api/questions", params={"favorite_only": "true"}, headers=self.headers
+            ).json()
+            self.assertEqual([i["id"] for i in fav["items"]], [qid])
+            self.assertEqual(
+                client.delete(f"/api/favorites/{qid}", headers=self.headers).status_code, 200
+            )
+            fav = client.get(
+                "/api/questions", params={"favorite_only": "true"}, headers=self.headers
+            ).json()
+            self.assertEqual(fav["items"], [])
 
     def test_mock_empty_bank_no_crash(self):
         """题库为空（mock _pick_question 返回 None）：自我介绍→提示→再输入不崩溃。
@@ -214,40 +296,52 @@ class UITest(unittest.TestCase):
             self.assertIn("题库", r2, "判空兜底重试出题，仍提示且不崩溃")
             self.assertFalse(s.finished)
 
-    def test_bank_dialog_renders(self):
-        """主界面渲染 + 打开题库对话框后出现「加入面试」选择按钮（题库非空时）。"""
-        from streamlit.testing.v1 import AppTest
+    def test_mock_session_stream_chat(self):
+        """启动模拟面试 + SSE 流式聊天（mock LLM），会话持久化可恢复。"""
+        db.upsert_question(
+            source="mianshiya",
+            title="Python 的 GIL 是什么？",
+            answer="x",
+            tags=["Python基础"],
+            difficulty="简单",
+        )
+        from app.voice_server import app
+        from fastapi.testclient import TestClient
 
-        at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
-        at.run()
-        self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
-        labels = [b.label for b in at.button]
-        self.assertIn("开始面试", labels)
-        self.assertTrue(any("浏览题库" in label for label in labels), "题库入口应在侧边栏")
-        next(b for b in at.button if "浏览题库" in b.label).click()
-        at.run()
-        self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
-        if not any("qb_add_" in (b.key or "") for b in at.button):
-            self.skipTest("题库为空，无「加入面试」按钮")
+        with TestClient(app) as client:
+            r = client.post("/api/session/start", json={"mode": "mock"}, headers=self.headers)
+            self.assertEqual(r.status_code, 200)
+            self.assertEqual(r.json()["mode"], "mock")
+            with mock.patch("app.agent.llm.chat_stream", return_value=iter(["标准", "答案"])):
+                r = client.post("/api/chat", json={"message": "你好"}, headers=self.headers)
+                self.assertEqual(r.status_code, 200)
+                body = r.text
+                self.assertIn("标准答案", body)
+                self.assertIn('"type": "done"', body)
+            s = client.get("/api/session", headers=self.headers).json()
+            self.assertTrue(s["active"], "会话应已持久化")
+            self.assertGreaterEqual(len(s["history"]), 3)
 
-    def test_ask_question_from_bank_switches_to_mock_mode(self):
-        """打开题库并点「加入面试」：界面不崩溃。
+    def test_custom_status_and_start(self):
+        """定制面试状态接口（按用户）与清空。"""
+        import app.voice_store as voice_store
+        from app.voice_server import app
+        from fastapi.testclient import TestClient
 
-        AppTest 对 st.dialog 内按钮点击支持有限（点击不会触发处理器），
-        选多题 → 综合面试的会话构建逻辑由 test_coach 定制题流程覆盖。
-        """
-        from streamlit.testing.v1 import AppTest
-
-        at = AppTest.from_file(WEB_ENTRY, default_timeout=60)
-        at.run()
-        next(b for b in at.button if "浏览题库" in b.label).click()
-        at.run()
-        add_buttons = [b for b in at.button if "qb_add_" in (b.key or "")]
-        if not add_buttons:
-            self.skipTest("题库为空，无「加入面试」按钮")
-        add_buttons[0].click()
-        at.run()
-        self.assertFalse(at.exception, f"界面运行异常: {at.exception}")
+        with TestClient(app) as client:
+            self.assertEqual(
+                client.get("/api/custom/status", headers=self.headers).json()["ready"], False
+            )
+            voice_store.save_custom_interview(self.user["id"], "Python 后端", "", ["Q1", "Q2"])
+            st = client.get("/api/custom/status", headers=self.headers).json()
+            self.assertTrue(st["ready"])
+            self.assertEqual(st["job_title"], "Python 后端")
+            self.assertEqual(
+                client.delete("/api/custom", headers=self.headers).status_code, 200
+            )
+            self.assertEqual(
+                client.get("/api/custom/status", headers=self.headers).json()["ready"], False
+            )
 
 
 if __name__ == "__main__":

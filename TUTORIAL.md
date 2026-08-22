@@ -118,11 +118,11 @@ DEEPSEEK_API_KEY=sk-你的key
 双击项目文件夹里的 **`scripts/start.bat`**。它会自动：
 
 1. 安装所需依赖（第一次会等几分钟）
-2. 启动语音服务（8765 端口）
-3. 启动网页（8501 端口，被占用会自动换 8502）
+2. 构建前端（首次需要 Node.js 18+，会等一会儿）
+3. 启动统一服务（默认 8765 端口，被占用会自动换 8766）
 4. 自动打开浏览器
 
-看到黑色窗口里出现 `http://localhost:8501` 就说明成功了。**这个黑色窗口别关**，关了服务就停了。
+看到浏览器打开 `http://localhost:8765` 就说明成功了。**启动窗口别关**，关了服务就停了。
 
 ### macOS / Linux：一键脚本
 
@@ -138,23 +138,23 @@ bash scripts/start.sh
 pip install -e .
 ```
 
-然后开两个终端窗口：
+再构建前端（首次）：
 
 ```bash
-# 终端 1：语音服务
-python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765
+cd frontend && npm install && npm run build && cd ..
 ```
 
+最后开一个终端启动统一服务：
+
 ```bash
-# 终端 2：文字版网页
-python -m streamlit run app/ui/web.py --server.headless true --server.port 8501
+python -m uvicorn app.voice_server:app --host 127.0.0.1 --port 8765
 ```
 
 ---
 
 ## 六、怎么用（文字版）
 
-打开浏览器访问 **http://localhost:8501**（或启动脚本提示的地址），你会看到首页三张卡片：
+打开浏览器访问 **http://localhost:8765**（或启动脚本提示的地址）。**首次使用先注册一个账号**（用户名 + 密码），登录后你会看到首页三张卡片：
 
 ### 1. 模拟面试 🎤
 
@@ -180,7 +180,7 @@ python -m streamlit run app/ui/web.py --server.headless true --server.port 8501
 
 ### 4. 题库浏览与收藏 📚
 
-左侧边栏点「📚 浏览题库」：
+点顶部或侧边栏的「📚 题库」按钮：
 
 - 按来源 / 难度 / 公司 / 关键词 / **标签**筛选
 - 点「⭐ 收藏」收藏题目，勾选「⭐ 仅看收藏」查看收藏
@@ -191,7 +191,7 @@ python -m streamlit run app/ui/web.py --server.headless true --server.port 8501
 
 ## 七、怎么用（语音通话）
 
-1. 打开 **http://127.0.0.1:8765/**（或点文字版右下角的 📞 按钮）
+1. 打开 **http://localhost:8765/voice**（或点文字版右下角的 📞 按钮）
 2. 点绿色 **📞 接通** 按钮（浏览器会询问麦克风权限，点允许）
 3. 小P 会**主动开口问候**，你直接说话就行
 4. **想打断**：小P 说话时你直接开口，它会停下听你讲
@@ -213,7 +213,7 @@ python -m streamlit run app/ui/web.py --server.headless true --server.port 8501
 
 - 确认启动脚本的黑色窗口还开着（服务在跑）
 - 刷新浏览器（`Ctrl+Shift+R` 强制刷新）
-- 确认地址是 `http://localhost:8501` 或脚本提示的地址
+- 确认地址是 `http://localhost:8765` 或脚本提示的地址
 
 ### Q3：提示"未检测到 DEEPSEEK_API_KEY"
 
@@ -223,7 +223,7 @@ Key 前面没有多余空格。
 ### Q4：文字回复正常，但语音没声音 / 语音识别没反应
 
 - 确认用的是 Chrome 或 Edge
-- 确认访问的是 **http://127.0.0.1:8765/** 而不是别的地址
+- 确认访问的是 **http://localhost:8765/voice** 而不是别的地址
 - 浏览器地址栏左侧的麦克风权限是否允许
 - 电脑音量、系统麦克风是否打开
 
@@ -243,8 +243,8 @@ python -m app.crawler.run
 
 ### Q7：端口被占用
 
-启动脚本会自动换端口（8501 → 8502）。语音端口 8765 被占用时，改 `.env` 里的
-`VOICE_PORT` 换个数字。
+启动脚本会自动换端口（8765 → 8766）。想固定其他端口时，改 `.env` 里的
+`APP_PORT` 换个数字。
 
 ### Q8：会不会扣很多钱？
 

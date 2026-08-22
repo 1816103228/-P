@@ -203,6 +203,32 @@ class MianShiYaAdapter(SourceAdapter):
                 difficulty=r.get("difficulty"),
             )
 
+    def fetch_details_for(self, source_ids: list[str]) -> dict:
+        """按 source_id 列表抓详情页，补全答案/难度到已入库题目（后台补答案用）。
+
+        与 fetch_category 不同：懒加载只抓列表页（answer=None），本方法在答题期间
+        异步补齐这些题目的答案，直接写回数据库。返回 {'total', 'updated'}。
+        """
+        ids = [str(s) for s in source_ids if str(s).strip()]
+        if not ids:
+            return {"total": 0, "updated": 0}
+        rows = [
+            {
+                "source_id": sid,
+                "title": "",
+                "content": None,
+                "answer": None,
+                "tags": None,
+                "difficulty": None,
+                "url": "",
+            }
+            for sid in ids
+        ]
+        rows = self._enrich_details(rows)  # 并行抓详情，填入 answer/difficulty
+        updated = sum(1 for r in rows if r.get("answer"))
+        self.after_store(rows)  # 回写数据库
+        return {"total": len(rows), "updated": updated}
+
     def _fetch_category(self, category: str, pages: int) -> list[dict]:
         rows: list[dict] = []
         for page in range(1, pages + 1):

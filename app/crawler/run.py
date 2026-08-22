@@ -7,14 +7,26 @@
 
 import argparse
 
-from app.crawler import leetcode, mianshiya, nowcoder
+from app import config
+from app.crawler import javaguide, mianshiya, nowcoder
 
-#: 已注册的数据源适配器（新增源在此登记即可）
-ADAPTERS = [
-    mianshiya.MianShiYaAdapter(),
-    leetcode.LeetCodeAdapter(),
-    nowcoder.NowCoderAdapter(),  # 占位，暂返回空
-]
+
+def build_adapters() -> list:
+    """构建已注册的数据源适配器列表（新增源在此登记即可）。"""
+    adapters = [
+        mianshiya.MianShiYaAdapter(),
+        javaguide.JavaGuideAdapter(),
+        nowcoder.NowCoderAdapter(),  # 占位，暂返回空
+    ]
+    # 力扣算法题默认关闭抓取（算法题已从题库移除）；需要时置 CRAWL_LEETCODE=1 开启
+    if config.CRAWL_LEETCODE:
+        from app.crawler import leetcode
+
+        adapters.insert(1, leetcode.LeetCodeAdapter())
+    return adapters
+
+
+ADAPTERS = build_adapters()
 
 
 def crawl_all(limit_per_source: int | None = None) -> list[dict]:
