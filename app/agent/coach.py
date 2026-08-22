@@ -432,24 +432,27 @@ class InterviewSession:
                 content += f"\n\n【本题参考答案（仅供点评参考，勿照念）】\n{reference[:800]}"
             self.messages.append({"role": "user", "content": content})
             # 先提交状态再流式：即使被语音打断（barge-in），下一句也会正确按"追问回答"路由
-            # 但若 _chat_stream 抛异常，需回滚状态以免会话卡死
+            # 若流式调用或迭代中途抛异常，需回滚状态与消息，避免会话卡死
             prev_turn, prev_followup = self.turn, self.followup_count
             self.followup_count = 1
             self.turn = "followup"
-            try:
-                stream = self._chat_stream()
-            except Exception:
-                self.turn, self.followup_count = prev_turn, prev_followup
-                raise
             self.messages.append({"role": "assistant", "content": ""})
             msg = self.messages[-1]
-            for delta in stream:
-                msg["content"] += delta
-                yield delta
+            try:
+                stream = self._chat_stream()
+                for delta in stream:
+                    msg["content"] += delta
+                    yield delta
+            except Exception:
+                self.turn, self.followup_count = prev_turn, prev_followup
+                self.messages.pop()
+                raise
             msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
             return msg["content"]
 
         if self.turn == "followup":
+            prev_followup = self.followup_count
+            prev_msgs = len(self.messages)
             self.messages.append({"role": "user", "content": f"（追问的回答）{user_text}"})
             if self.followup_count < MAX_FOLLOWUPS and _is_shallow_answer(user_text):
                 self.followup_count += 1
@@ -460,12 +463,17 @@ class InterviewSession:
                         "再追问 1 个更具体的问题（引用用户原话）。",
                     }
                 )
-                stream = self._chat_stream()
                 self.messages.append({"role": "assistant", "content": ""})
                 msg = self.messages[-1]
-                for delta in stream:
-                    msg["content"] += delta
-                    yield delta
+                try:
+                    stream = self._chat_stream()
+                    for delta in stream:
+                        msg["content"] += delta
+                        yield delta
+                except Exception:
+                    self.followup_count = prev_followup
+                    del self.messages[prev_msgs:]
+                    raise
                 msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
                 return msg["content"]
             self.followup_count = 0
