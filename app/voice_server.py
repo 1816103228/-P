@@ -27,7 +27,14 @@ WebSocket 协议（JSON 文本帧，需 ?token=<登录令牌>）：
     xiaop-voice
 """
 
+import asyncio
+import base64
+import json
+import logging
+import re
 import time
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 import requests
 import uvicorn
@@ -38,11 +45,6 @@ from fastapi.staticfiles import StaticFiles
 import app.db as db
 import app.session_store as session_store
 import app.voice_store as voice_store
-import asyncio
-import base64
-import json
-import logging
-import re
 from app import auth, config, prompts
 from app.agent import llm
 from app.agent.coach import InterviewSession
@@ -52,8 +54,6 @@ from app.routers import custom as custom_api
 from app.routers import questions as questions_api
 from app.routers import session as session_api
 from app.scheduler import setup_logging
-from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
 try:
     import edge_tts

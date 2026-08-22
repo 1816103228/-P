@@ -10,7 +10,11 @@
 """
 
 import atexit
+import logging
+import os
 import sys
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -18,11 +22,7 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 import app.config as config
 import app.db as db
-import logging
-import os
 from app.crawler.run import crawl_all
-from datetime import datetime
-from logging.handlers import RotatingFileHandler
 
 logger = logging.getLogger("interview_coach.scheduler")
 

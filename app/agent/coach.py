@@ -8,13 +8,14 @@
 - 支持流式输出（handle_stream）与同步输出（handle）。
 """
 
-import app.db as db
 import json
 import logging
 import re
+from datetime import datetime, timezone
+
+import app.db as db
 from app import config, prompts
 from app.agent import llm
-from datetime import datetime, timezone
 
 logger = logging.getLogger("interview_coach.coach")
 
