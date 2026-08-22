@@ -191,6 +191,16 @@ def get_conn() -> sqlite3.Connection:
     return conn
 
 
+def _row_to_dict(row: sqlite3.Row | None) -> dict | None:
+    """把 sqlite3.Row 转为 dict，让调用方安全使用 .get() 等 dict 语义。"""
+    return dict(row) if row is not None else None
+
+
+def _rows_to_dicts(rows: list[sqlite3.Row]) -> list[dict]:
+    """把 sqlite3.Row 列表转为 dict 列表。"""
+    return [dict(r) for r in rows]
+
+
 def init_db() -> None:
     """建库建表 + 执行迁移（幂等，可反复调用）。"""
     with closing(get_conn()) as conn, conn:
@@ -409,11 +419,13 @@ def count_questions() -> int:
         return conn.execute("SELECT COUNT(*) AS n FROM questions").fetchone()["n"]
 
 
-def count_by_source() -> list[sqlite3.Row]:
+def count_by_source() -> list[dict]:
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT source, COUNT(*) AS n FROM questions GROUP BY source ORDER BY n DESC"
-        ).fetchall()
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT source, COUNT(*) AS n FROM questions GROUP BY source ORDER BY n DESC"
+            ).fetchall()
+        )
 
 
 # ------------------------------------------------------------ 懒加载补抓记录
@@ -458,7 +470,7 @@ def update_question_fields(question_id: int, fields: dict) -> int:
 
 def list_pending_rule_clean(
     clean_version: str, limit: int | None = None
-) -> list[sqlite3.Row]:
+) -> list[dict]:
     """待规则清洗的行：状态为 raw，或 clean_version 过期（规则升级后精准重洗）。"""
     sql = (
         "SELECT * FROM questions WHERE clean_status = ? OR "
@@ -469,12 +481,12 @@ def list_pending_rule_clean(
         sql += " LIMIT ?"
         params.append(limit)
     with closing(get_conn()) as conn:
-        return conn.execute(sql, params).fetchall()
+        return _rows_to_dicts(conn.execute(sql, params).fetchall())
 
 
 def list_pending_semantic_clean(
     coarse_tags: set[str] | None = None, limit: int | None = None
-) -> list[sqlite3.Row]:
+) -> list[dict]:
     """待语义清洗（LLM 打标）的行：已过规则清洗、但标签仍粗糙/缺失。"""
     params: list = [CLEAN_STATUS_RULE]
     conds = ["clean_status = ?", "(tags IS NULL OR tags = '')"]
@@ -486,7 +498,7 @@ def list_pending_semantic_clean(
         sql += " LIMIT ?"
         params.append(limit)
     with closing(get_conn()) as conn:
-        return conn.execute(sql, params).fetchall()
+        return _rows_to_dicts(conn.execute(sql, params).fetchall())
 
 
 def mark_clean(ids: list[int], status: str, clean_version: str) -> int:
@@ -568,7 +580,7 @@ def search_questions(
     company: str | None = None,
     keyword: str | None = None,
     limit: int = 20,
-) -> list[sqlite3.Row]:
+) -> list[dict]:
     """按标签/难度/来源/公司/标题关键词检索题目。"""
     sql = "SELECT * FROM questions WHERE 1=1"
     params: list = []
@@ -593,7 +605,7 @@ def search_questions(
     sql += " ORDER BY fetched_at DESC LIMIT ?"
     params.append(limit)
     with closing(get_conn()) as conn:
-        return conn.execute(sql, params).fetchall()
+        return _rows_to_dicts(conn.execute(sql, params).fetchall())
 
 
 def browse_questions(
@@ -605,7 +617,7 @@ def browse_questions(
     favorite_only: bool = False,
     user_id: int | None = None,
     limit: int = 30,
-) -> list[sqlite3.Row]:
+) -> list[dict]:
     """题库浏览检索：关键词走 FTS5（trigram → unicode61），可叠加来源/难度/公司过滤；
     全部失败时回退 标题/题干/答案/标签 LIKE。favorite_only 按 user_id 过滤收藏。"""
     where: list[str] = []
@@ -634,7 +646,7 @@ def browse_questions(
         sql = f"SELECT q.* FROM questions q WHERE 1=1{cond} ORDER BY q.fetched_at DESC LIMIT ?"
         params.append(limit)
         with closing(get_conn()) as conn:
-            return conn.execute(sql, params).fetchall()
+            return _rows_to_dicts(conn.execute(sql, params).fetchall())
 
     # 1) trigram 命中（中文子串/组合词，≥3 字符）
     trig_q = _fts_trigram_query(kw)
@@ -647,7 +659,7 @@ def browse_questions(
             with closing(get_conn()) as conn:
                 rows = conn.execute(sql, [trig_q, *params, limit]).fetchall()
             if rows:
-                return rows
+                return _rows_to_dicts(rows)
         except sqlite3.OperationalError:
             pass
     # 2) unicode61 命中
@@ -660,7 +672,7 @@ def browse_questions(
         with closing(get_conn()) as conn:
             rows = conn.execute(sql, [uq, *params, limit]).fetchall()
         if rows:
-            return rows
+            return _rows_to_dicts(rows)
     except sqlite3.OperationalError:
         pass
     # 3) LIKE 兜底：标题/题干/答案/标签任一包含
@@ -672,7 +684,7 @@ def browse_questions(
         f"{cond} ORDER BY q.fetched_at DESC LIMIT ?"
     )
     with closing(get_conn()) as conn:
-        return conn.execute(sql, [like, like, like, like, *params, limit]).fetchall()
+        return _rows_to_dicts(conn.execute(sql, [like, like, like, like, *params, limit]).fetchall())
 
 
 def pick_random_question(
@@ -681,7 +693,7 @@ def pick_random_question(
     source: str | None = None,
     exclude_ids: set[int] | None = None,
     limit: int = 1,
-) -> list[sqlite3.Row]:
+) -> list[dict]:
     """按条件在 SQL 层随机选题，避免全表捞回内存过滤。"""
     sql = "SELECT id, title, tags, difficulty, source FROM questions WHERE 1=1"
     params: list = []
@@ -704,13 +716,15 @@ def pick_random_question(
     sql += " ORDER BY RANDOM() LIMIT ?"
     params.append(limit)
     with closing(get_conn()) as conn:
-        return conn.execute(sql, params).fetchall()
+        return _rows_to_dicts(conn.execute(sql, params).fetchall())
 
 
 def get_question_by_id(qid: int):
     """按 id 取单条题目（题库浏览→出这道题 用）。"""
     with closing(get_conn()) as conn:
-        return conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
+        return _row_to_dict(
+            conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
+        )
 
 
 def list_companies() -> list[str]:
@@ -780,21 +794,25 @@ def finish_session(
         )
 
 
-def list_sessions(limit: int = 50) -> list[sqlite3.Row]:
+def list_sessions(limit: int = 50) -> list[dict]:
     """已完成的面试记录（按开始时间倒序，供侧边栏复盘）。"""
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT * FROM sessions WHERE report IS NOT NULL ORDER BY started_at DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM sessions WHERE report IS NOT NULL ORDER BY started_at DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        )
 
 
-def get_session_answers(session_id: int) -> list[sqlite3.Row]:
+def get_session_answers(session_id: int) -> list[dict]:
     """按会话取逐题问答记录。"""
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT * FROM session_answers WHERE session_id=? ORDER BY id", (session_id,)
-        ).fetchall()
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM session_answers WHERE session_id=? ORDER BY id", (session_id,)
+            ).fetchall()
+        )
 
 
 # ---------------------------------------------------------------- 会话状态持久化（多用户）
@@ -802,11 +820,13 @@ def get_session_answers(session_id: int) -> list[sqlite3.Row]:
 def get_active_session(user_id: int):
     """取某用户当前活跃会话（status='active'）。"""
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT * FROM sessions WHERE user_id = ? AND status = 'active' "
-            "ORDER BY started_at DESC LIMIT 1",
-            (user_id,),
-        ).fetchone()
+        return _row_to_dict(
+            conn.execute(
+                "SELECT * FROM sessions WHERE user_id = ? AND status = 'active' "
+                "ORDER BY started_at DESC LIMIT 1",
+                (user_id,),
+            ).fetchone()
+        )
 
 
 def update_session_state(
@@ -848,13 +868,15 @@ def archive_active_session(user_id: int) -> None:
         )
 
 
-def list_sessions_by_user(user_id: int, limit: int = 50) -> list[sqlite3.Row]:
+def list_sessions_by_user(user_id: int, limit: int = 50) -> list[dict]:
     """某用户的面试历史（含进行中与已完成的，按开始时间倒序）。"""
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT * FROM sessions WHERE user_id = ? ORDER BY started_at DESC LIMIT ?",
-            (user_id, limit),
-        ).fetchall()
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT * FROM sessions WHERE user_id = ? ORDER BY started_at DESC LIMIT ?",
+                (user_id, limit),
+            ).fetchall()
+        )
 
 
 def add_favorite(question_id: int, user_id: int | None = None) -> bool:
@@ -928,14 +950,18 @@ def create_user(
 def get_user_by_username(username: str):
     """按用户名取用户（用户名不区分大小写）。"""
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
-        ).fetchone()
+        return _row_to_dict(
+            conn.execute(
+                "SELECT * FROM users WHERE username = ? COLLATE NOCASE", (username,)
+            ).fetchone()
+        )
 
 
 def get_user_by_id(user_id: int):
     with closing(get_conn()) as conn:
-        return conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        return _row_to_dict(
+            conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
+        )
 
 
 def update_user_persona(user_id: int, persona: str) -> None:
@@ -972,12 +998,13 @@ def get_user_by_token(token: str):
     """按令牌取用户（校验有效期）；无效/过期返回 None。"""
     now = datetime.now(timezone.utc).isoformat()
     with closing(get_conn()) as conn:
-        row = conn.execute(
-            "SELECT u.* FROM auth_tokens t JOIN users u ON u.id = t.user_id "
-            "WHERE t.token = ? AND t.expires_at > ?",
-            (token, now),
-        ).fetchone()
-    return row
+        return _row_to_dict(
+            conn.execute(
+                "SELECT u.* FROM auth_tokens t JOIN users u ON u.id = t.user_id "
+                "WHERE t.token = ? AND t.expires_at > ?",
+                (token, now),
+            ).fetchone()
+        )
 
 
 def revoke_token(token: str) -> None:
@@ -1085,17 +1112,19 @@ def _rebuild_fts() -> None:
                 conn.execute(f"INSERT INTO {t}({t}) VALUES('rebuild')")
 
 
-def list_favorites(limit: int = 50) -> list[sqlite3.Row]:
+def list_favorites(limit: int = 50) -> list[dict]:
     """收藏的题目列表（含收藏时间，按收藏先后倒序）。"""
     with closing(get_conn()) as conn:
-        return conn.execute(
-            "SELECT q.*, f.created_at AS faved_at FROM favorites f "
-            "JOIN questions q ON q.id = f.question_id ORDER BY f.id DESC LIMIT ?",
-            (limit,),
-        ).fetchall()
+        return _rows_to_dicts(
+            conn.execute(
+                "SELECT q.*, f.created_at AS faved_at FROM favorites f "
+                "JOIN questions q ON q.id = f.question_id ORDER BY f.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+        )
 
 
-def latest_questions(source: str | None = None, limit: int = 20) -> list[sqlite3.Row]:
+def latest_questions(source: str | None = None, limit: int = 20) -> list[dict]:
     """最新的题目（模拟面试候选题库）。"""
     sql = "SELECT * FROM questions"
     params: list = []
@@ -1105,7 +1134,7 @@ def latest_questions(source: str | None = None, limit: int = 20) -> list[sqlite3
     sql += " ORDER BY fetched_at DESC LIMIT ?"
     params.append(limit)
     with closing(get_conn()) as conn:
-        return conn.execute(sql, params).fetchall()
+        return _rows_to_dicts(conn.execute(sql, params).fetchall())
 
 
 def _fts_query(keyword: str) -> str:
@@ -1128,7 +1157,7 @@ def _fts_trigram_query(keyword: str) -> str | None:
     return " AND ".join(f'"{_escape_fts(t)}"' for t in tokens)
 
 
-def _fts_trigram_search(keyword: str, limit: int = 5) -> list[sqlite3.Row]:
+def _fts_trigram_search(keyword: str, limit: int = 5) -> list[dict]:
     """trigram 索引检索：中文子串/组合词匹配（≥3 字符），按 bm25 排序。"""
     query = _fts_trigram_query(keyword)
     if not query:
@@ -1139,12 +1168,12 @@ def _fts_trigram_search(keyword: str, limit: int = 5) -> list[sqlite3.Row]:
              ORDER BY bm25(questions_fts_tr) LIMIT ?"""
     try:
         with closing(get_conn()) as conn:
-            return conn.execute(sql, (query, limit)).fetchall()
+            return _rows_to_dicts(conn.execute(sql, (query, limit)).fetchall())
     except sqlite3.OperationalError:
         return []
 
 
-def fts_search(keyword: str, limit: int = 5) -> list[sqlite3.Row]:
+def fts_search(keyword: str, limit: int = 5) -> list[dict]:
     """全文检索：trigram（中文子串，≥3 字）→ unicode61 → LIKE 三级回退。"""
     keyword = (keyword or "").strip()
     if not keyword:
@@ -1159,7 +1188,7 @@ def fts_search(keyword: str, limit: int = 5) -> list[sqlite3.Row]:
              ORDER BY bm25(questions_fts) LIMIT ?"""
     try:
         with closing(get_conn()) as conn:
-            rows = conn.execute(sql, (query, limit)).fetchall()
+            rows = _rows_to_dicts(conn.execute(sql, (query, limit)).fetchall())
     except sqlite3.OperationalError:
         rows = []
     if rows:
