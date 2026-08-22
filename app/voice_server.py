@@ -27,14 +27,7 @@ WebSocket 协议（JSON 文本帧，需 ?token=<登录令牌>）：
     xiaop-voice
 """
 
-import asyncio
-import base64
-import json
-import logging
-import re
 import time
-from contextlib import asynccontextmanager, suppress
-from pathlib import Path
 
 import requests
 import uvicorn
@@ -45,6 +38,11 @@ from fastapi.staticfiles import StaticFiles
 import app.db as db
 import app.session_store as session_store
 import app.voice_store as voice_store
+import asyncio
+import base64
+import json
+import logging
+import re
 from app import auth, config, prompts
 from app.agent import llm
 from app.agent.coach import InterviewSession
@@ -54,6 +52,8 @@ from app.routers import custom as custom_api
 from app.routers import questions as questions_api
 from app.routers import session as session_api
 from app.scheduler import setup_logging
+from contextlib import asynccontextmanager, suppress
+from pathlib import Path
 
 try:
     import edge_tts
@@ -145,7 +145,7 @@ def maybe_switch_to_mock(session: InterviewSession, text: str) -> InterviewSessi
     # 只匹配明确的"开始"意图，避免首条消息只是提问"模拟面试是什么"就误切换
     match = _MOCK_START_RE.search(text)
     if session.mode == "coach" and len(session.messages) <= 1 and match is not None:
-        return InterviewSession("mock")
+        return InterviewSession("mock", persona=session.persona)
     return session
 
 
@@ -500,6 +500,7 @@ async def voice(ws: WebSocket) -> None:
         return
     user_id = user["id"]
     await ws.accept()
+    persona = user.get("persona") or ""
     custom = voice_store.load_custom_interview(user_id)
     if custom:
         # 已准备定制面试 → 接通即进入模拟面试，用定制题目
@@ -508,6 +509,7 @@ async def voice(ws: WebSocket) -> None:
             questions=custom["questions"],
             job_title=custom.get("job_title", ""),
             jd=custom.get("jd", ""),
+            persona=persona,
         )
         greeting = _build_custom_greeting(custom)
     else:
@@ -516,7 +518,7 @@ async def voice(ws: WebSocket) -> None:
         if session is not None and not session.finished:
             greeting = REOPEN_GREETING
         else:
-            session = InterviewSession("coach")
+            session = InterviewSession("coach", persona=persona)
             greeting = prompts.VOICE_GREETING
     # 新建会话（语音发起的默认答疑 / 语音定制）落库，供文字版与后续语音共享
     if getattr(session, "session_id", None) is None:
@@ -693,8 +695,8 @@ async def spa_fallback(full_path: str):
     if full_path.startswith(("api/", "ws/")):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
     if full_path:
-        candidate = _FRONTEND_DIST / full_path
-        if candidate.is_file():
+        candidate = (_FRONTEND_DIST / full_path).resolve()
+        if candidate.is_file() and str(candidate).startswith(str(_FRONTEND_DIST.resolve())):
             return FileResponse(candidate)
     index = _FRONTEND_DIST / "index.html"
     if index.is_file():
