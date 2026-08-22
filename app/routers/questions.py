@@ -115,6 +115,7 @@ def import_csv(body: dict, user_row=auth.CurrentUser) -> dict:
 
 # ---------------------------------------------------------------- 收藏
 
+
 @router.get("/favorites")
 def favorites(user_row=auth.CurrentUser) -> dict:
     """当前用户收藏的题目 id 列表。"""

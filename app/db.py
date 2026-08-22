@@ -254,7 +254,9 @@ def _migrate(conn: sqlite3.Connection) -> None:
     if version < 6:
         q_cols = {r[1] for r in conn.execute("PRAGMA table_info(questions)")}
         if "clean_status" not in q_cols:
-            conn.execute("ALTER TABLE questions ADD COLUMN clean_status TEXT NOT NULL DEFAULT 'raw'")
+            conn.execute(
+                "ALTER TABLE questions ADD COLUMN clean_status TEXT NOT NULL DEFAULT 'raw'"
+            )
         if "clean_version" not in q_cols:
             conn.execute("ALTER TABLE questions ADD COLUMN clean_version TEXT")
         if "cleaned_at" not in q_cols:
@@ -472,9 +474,7 @@ def update_question_fields(question_id: int, fields: dict) -> int:
         ).rowcount
 
 
-def list_pending_rule_clean(
-    clean_version: str, limit: int | None = None
-) -> list[dict]:
+def list_pending_rule_clean(clean_version: str, limit: int | None = None) -> list[dict]:
     """待规则清洗的行：状态为 raw，或 clean_version 过期（规则升级后精准重洗）。"""
     sql = (
         "SELECT * FROM questions WHERE clean_status = ? OR "
@@ -688,7 +688,9 @@ def browse_questions(
         f"{cond} ORDER BY q.fetched_at DESC LIMIT ?"
     )
     with closing(get_conn()) as conn:
-        return _rows_to_dicts(conn.execute(sql, [like, like, like, like, *params, limit]).fetchall())
+        return _rows_to_dicts(
+            conn.execute(sql, [like, like, like, like, *params, limit]).fetchall()
+        )
 
 
 def pick_random_question(
@@ -726,9 +728,7 @@ def pick_random_question(
 def get_question_by_id(qid: int):
     """按 id 取单条题目（题库浏览→出这道题 用）。"""
     with closing(get_conn()) as conn:
-        return _row_to_dict(
-            conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone()
-        )
+        return _row_to_dict(conn.execute("SELECT * FROM questions WHERE id=?", (qid,)).fetchone())
 
 
 def list_companies() -> list[str]:
@@ -821,6 +821,7 @@ def get_session_answers(session_id: int) -> list[dict]:
 
 # ---------------------------------------------------------------- 会话状态持久化（多用户）
 
+
 def get_active_session(user_id: int):
     """取某用户当前活跃会话（status='active'）。"""
     with closing(get_conn()) as conn:
@@ -866,8 +867,7 @@ def archive_active_session(user_id: int) -> None:
     """把某用户当前活跃会话标记为已完成（status='done'），用于开始新会话前归档。"""
     with closing(get_conn()) as conn, conn:
         conn.execute(
-            "UPDATE sessions SET status='done', updated_at=? "
-            "WHERE user_id=? AND status='active'",
+            "UPDATE sessions SET status='done', updated_at=? WHERE user_id=? AND status='active'",
             (datetime.now(timezone.utc).isoformat(), user_id),
         )
 
@@ -929,6 +929,7 @@ def list_favorite_ids(user_id: int | None = None) -> set[int]:
 
 # ---------------------------------------------------------------- 用户与登录令牌
 
+
 def create_user(
     username: str, password_hash: str, nickname: str | None = None, persona: str = ""
 ) -> int | None:
@@ -963,9 +964,7 @@ def get_user_by_username(username: str):
 
 def get_user_by_id(user_id: int):
     with closing(get_conn()) as conn:
-        return _row_to_dict(
-            conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone()
-        )
+        return _row_to_dict(conn.execute("SELECT * FROM users WHERE id = ?", (user_id,)).fetchone())
 
 
 def update_user_persona(user_id: int, persona: str) -> None:
@@ -1025,9 +1024,8 @@ def revoke_all_tokens(user_id: int) -> None:
 
 # ---------------------------------------------------------------- 定制面试（按用户）
 
-def save_custom_interview(
-    user_id: int, job_title: str, jd: str, questions: list[str]
-) -> None:
+
+def save_custom_interview(user_id: int, job_title: str, jd: str, questions: list[str]) -> None:
     """保存某用户最新一份定制面试（覆盖旧值）。"""
     payload = json.dumps([q for q in (questions or []) if q and q.strip()], ensure_ascii=False)
     with closing(get_conn()) as conn, conn:

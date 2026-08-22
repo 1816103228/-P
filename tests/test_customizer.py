@@ -71,7 +71,9 @@ class CustomizerTests(unittest.TestCase):
             mock.patch("app.agent.customizer.llm.chat", side_effect=fake_chat),
             mock.patch(
                 "app.agent.customizer.db.fts_search",
-                return_value=[_row("Redis 缓存穿透", "中等", answer="缓存穿透是指请求绕过缓存直达数据库…")],
+                return_value=[
+                    _row("Redis 缓存穿透", "中等", answer="缓存穿透是指请求绕过缓存直达数据库…")
+                ],
             ),
         ):
             customizer.generate_interview_questions("后端", "Redis")
@@ -190,9 +192,7 @@ class CustomizerTests(unittest.TestCase):
                 "app.agent.customizer.db.fts_search",
                 side_effect=lambda kw, limit=5: next(bank_results),
             ),
-            mock.patch(
-                "app.agent.customizer.lazy.backfill_for_job", return_value=lazy_info
-            ),
+            mock.patch("app.agent.customizer.lazy.backfill_for_job", return_value=lazy_info),
             mock.patch("app.agent.customizer.lazy.enrich_answers_async") as m_enrich,
         ):
             qs, meta = customizer.generate_interview_questions_with_meta("前端开发", "Vue")

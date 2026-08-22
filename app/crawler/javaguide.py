@@ -8,10 +8,11 @@
 网络不佳时整页超时/失败只告警，不影响其他源。
 """
 
-from bs4 import BeautifulSoup
-
 import logging
 import re
+
+from bs4 import BeautifulSoup
+
 from app.crawler.base import SourceAdapter, make_session
 
 logger = logging.getLogger("interview_coach.crawler.javaguide")

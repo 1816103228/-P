@@ -336,9 +336,7 @@ class ApiAndFlowTests(unittest.TestCase):
             st = client.get("/api/custom/status", headers=self.headers).json()
             self.assertTrue(st["ready"])
             self.assertEqual(st["job_title"], "Python 后端")
-            self.assertEqual(
-                client.delete("/api/custom", headers=self.headers).status_code, 200
-            )
+            self.assertEqual(client.delete("/api/custom", headers=self.headers).status_code, 200)
             self.assertEqual(
                 client.get("/api/custom/status", headers=self.headers).json()["ready"], False
             )

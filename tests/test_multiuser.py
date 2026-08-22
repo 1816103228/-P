@@ -72,7 +72,11 @@ class SessionPersistenceTests(unittest.TestCase):
 
     def test_to_dict_from_dict_roundtrip(self):
         s = InterviewSession(
-            "mock", questions=["Q1", "Q2"], job_title="Python 后端", jd="JD", persona="一面 · 同级工程师"
+            "mock",
+            questions=["Q1", "Q2"],
+            job_title="Python 后端",
+            jd="JD",
+            persona="一面 · 同级工程师",
         )
         s.turn = "answering"
         s.asked_ids = {1, 2, 3}
@@ -117,7 +121,9 @@ class SessionPersistenceTests(unittest.TestCase):
         s.display_history.append(["assistant", "回答"])
         session_store.save_session(self.uid, s)
         loaded = session_store.load_active_session(self.uid)
-        self.assertEqual(loaded.display_history, [["assistant", "欢迎"], ["user", "问题"], ["assistant", "回答"]])
+        self.assertEqual(
+            loaded.display_history, [["assistant", "欢迎"], ["user", "问题"], ["assistant", "回答"]]
+        )
 
     def test_user_sessions_isolated(self):
         """不同用户的活跃会话互不干扰。"""
@@ -171,8 +177,8 @@ class CustomGenerateSseTests(unittest.TestCase):
             self.assertEqual(r.status_code, 200)
             body = r.text
             self.assertIn('"type": "done"', body)
-            self.assertIn('定制题', body)
-            self.assertIn('2 道定制题', body)
+            self.assertIn("定制题", body)
+            self.assertIn("2 道定制题", body)
             # 会话已进入定制模拟面试
             s = client.get("/api/session", headers=self.headers).json()
             self.assertTrue(s["active"])

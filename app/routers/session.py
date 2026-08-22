@@ -163,9 +163,7 @@ async def chat(body: ChatBody, user_row=auth.CurrentUser):
                 if delta is None:
                     break
                 if delta:
-                    yield _sse(
-                        {"type": "delta", "content": delta}
-                    )
+                    yield _sse({"type": "delta", "content": delta})
             # 流结束：先把助手回复补进展示历史，再持久化会话（保证刷新后不丢最后一条）
             session.display_history.append(
                 ["assistant", session.messages[-1]["content"] if session.messages else ""]
@@ -175,7 +173,11 @@ async def chat(body: ChatBody, user_row=auth.CurrentUser):
             except Exception:
                 logger.exception("会话持久化失败（user=%s）", user_row["username"])
             report = None
-            if session.finished and session.messages and session.messages[-1].get("role") == "assistant":
+            if (
+                session.finished
+                and session.messages
+                and session.messages[-1].get("role") == "assistant"
+            ):
                 report = session.messages[-1]["content"]
             yield _sse(
                 {

@@ -232,9 +232,7 @@ class ReferenceAnswerTests(unittest.TestCase):
 
     def test_mianshiya_backfill_failure_returns_none(self):
         row = {"id": 3, "source": "mianshiya", "source_id": "42", "answer": None}
-        with mock.patch(
-            "app.crawler.mianshiya.MianShiYaAdapter", side_effect=RuntimeError("boom")
-        ):
+        with mock.patch("app.crawler.mianshiya.MianShiYaAdapter", side_effect=RuntimeError("boom")):
             self.assertIsNone(coach._ensure_reference_answer(row))
 
     def test_comment_injects_reference_answer(self):

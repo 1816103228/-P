@@ -161,7 +161,11 @@ def run_semantic_clean(
             progress(min(i + classify.BATCH_SIZE, len(rows)), len(rows))
     if not dry_run and labeled_ids:
         db.set_question_tags(labeled_ids, tags_by_id, CLEAN_VERSION)
-    return {"scanned": len(rows), "labeled": len(labeled_ids), "skipped": len(rows) - len(labeled_ids)}
+    return {
+        "scanned": len(rows),
+        "labeled": len(labeled_ids),
+        "skipped": len(rows) - len(labeled_ids),
+    }
 
 
 def run_clean(
