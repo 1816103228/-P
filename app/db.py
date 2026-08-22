@@ -13,10 +13,9 @@ import json
 import logging
 import re
 import sqlite3
+from app import config
 from contextlib import closing, suppress
 from datetime import datetime, timezone
-
-from app import config
 
 logger = logging.getLogger("interview_coach.db")
 
@@ -461,6 +460,11 @@ def update_question_fields(question_id: int, fields: dict) -> int:
     """按字段字典更新题目任意列（清洗回写用），返回受影响行数。"""
     if not fields:
         return 0
+    allowed = {"title", "answer", "tags", "difficulty", "content", "company", "url",
+               "source", "source_id", "clean_status", "clean_version", "cleaned_at"}
+    invalid = set(fields.keys()) - allowed
+    if invalid:
+        raise ValueError(f"非法字段: {invalid}")
     sets = ", ".join(f"{k} = ?" for k in fields)
     with closing(get_conn()) as conn, conn:
         return conn.execute(

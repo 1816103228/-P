@@ -8,14 +8,13 @@
 - 支持流式输出（handle_stream）与同步输出（handle）。
 """
 
+import app.db as db
 import json
 import logging
 import re
-from datetime import datetime, timezone
-
-import app.db as db
 from app import config, prompts
 from app.agent import llm
+from datetime import datetime, timezone
 
 logger = logging.getLogger("interview_coach.coach")
 
@@ -432,9 +431,15 @@ class InterviewSession:
                 content += f"\n\n【本题参考答案（仅供点评参考，勿照念）】\n{reference[:800]}"
             self.messages.append({"role": "user", "content": content})
             # 先提交状态再流式：即使被语音打断（barge-in），下一句也会正确按"追问回答"路由
+            # 但若 _chat_stream 抛异常，需回滚状态以免会话卡死
+            prev_turn, prev_followup = self.turn, self.followup_count
             self.followup_count = 1
             self.turn = "followup"
-            stream = self._chat_stream()
+            try:
+                stream = self._chat_stream()
+            except Exception:
+                self.turn, self.followup_count = prev_turn, prev_followup
+                raise
             self.messages.append({"role": "assistant", "content": ""})
             msg = self.messages[-1]
             for delta in stream:

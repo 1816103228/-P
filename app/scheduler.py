@@ -10,11 +10,7 @@
 """
 
 import atexit
-import logging
-import os
 import sys
-from datetime import datetime
-from logging.handlers import RotatingFileHandler
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
@@ -22,7 +18,11 @@ from apscheduler.triggers.interval import IntervalTrigger
 
 import app.config as config
 import app.db as db
+import logging
+import os
 from app.crawler.run import crawl_all
+from datetime import datetime
+from logging.handlers import RotatingFileHandler
 
 logger = logging.getLogger("interview_coach.scheduler")
 
@@ -36,6 +36,7 @@ def acquire_scheduler_lock() -> bool:
     lock_path = config.DATA_DIR / "scheduler.lock"
     try:
         fh = open(lock_path, "a+")  # noqa: SIM115 - 句柄需长期持有（_lock_handles）以保持 OS 文件锁
+        fh.seek(0)
         if sys.platform == "win32":
             import msvcrt
 
