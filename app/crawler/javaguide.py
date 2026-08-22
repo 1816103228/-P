@@ -10,7 +10,9 @@
 
 import logging
 import re
+
 from bs4 import BeautifulSoup
+
 from app.crawler.base import SourceAdapter, make_session
 
 logger = logging.getLogger("interview_coach.crawler.javaguide")
@@ -111,6 +113,7 @@ class JavaGuideAdapter(SourceAdapter):
                     "tags": tags,
                     "difficulty": "中等",
                     "url": url,
+                    "source": self.name,
                 }
             )
         return rows

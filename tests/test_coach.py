@@ -102,6 +102,111 @@ class CoachFlowTests(unittest.TestCase):
         self.assertEqual(s.turn, "followup")
         self.assertEqual([a["stage"] for a in s.answers], ["定制题 1", "定制题 2"])
 
+    def test_stream_exception_rolls_back_followup_state(self):
+        """流式迭代中途抛异常：恢复 turn/followup_count，并移除未完成的占位消息。"""
+        s = InterviewSession("mock", questions=["Q1"])
+        state = {"calls": 0}
+
+        def chat_stream(messages, **kwargs):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return iter(["（mock）"])
+
+            def exploding():
+                yield "部分点评"
+                raise RuntimeError("网络中断")
+
+            return exploding()
+
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch("app.agent.coach.llm.chat_stream", side_effect=chat_stream),
+        ):
+            list(s.handle_stream("自我介绍：我是张三，3年后端"))  # 出题流正常
+            prev_answers = len(s.answers)
+            prev_messages = list(s.messages)
+            g = s.handle_stream(LONG_ANSWER)  # 点评+追问，流中途抛异常
+            with self.assertRaises(RuntimeError):
+                for _ in g:
+                    pass
+        self.assertEqual(s.turn, "answering", "异常后应回滚到 answering")
+        self.assertEqual(s.followup_count, 0, "异常后追问计数应回滚")
+        self.assertEqual(len(s.answers), prev_answers, "异常后不应残留重复的答案记录")
+        self.assertEqual(s.messages, prev_messages, "异常后消息列表应完整恢复")
+
+    def test_stream_exception_rolls_back_shallow_followup(self):
+        """浅回答触发的二次追问流中断：恢复 followup_count 并清掉追加的消息。"""
+        s = InterviewSession("mock", questions=["Q1"])
+        state = {"calls": 0}
+
+        def chat_stream(messages, **kwargs):
+            state["calls"] += 1
+            if state["calls"] <= 2:
+                return iter(["（mock）"])
+
+            def exploding():
+                yield "部分追问"
+                raise RuntimeError("网络中断")
+
+            return exploding()
+
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch("app.agent.coach.llm.chat_stream", side_effect=chat_stream),
+        ):
+            list(s.handle_stream("自我介绍：我是张三，3年后端"))
+            list(s.handle_stream(LONG_ANSWER))  # 点评+追问正常
+            self.assertEqual(s.followup_count, 1)
+            prev_msgs = len(s.messages)
+            g = s.handle_stream("忘了，没接触过")  # 浅回答 → 二次追问，流中断
+            with self.assertRaises(RuntimeError):
+                for _ in g:
+                    pass
+        self.assertEqual(s.followup_count, 1, "异常后应回滚到第一次追问")
+        self.assertEqual(s.turn, "followup")
+        self.assertEqual(len(s.messages), prev_msgs, "异常后消息列表应完整恢复")
+        self.assertFalse(
+            any(m["content"].startswith("（追问的回答）") for m in s.messages),
+            "异常后应清掉追加的追问回答消息",
+        )
+
+    def test_stream_exception_restores_messages_after_compaction(self):
+        """流式失败发生在上下文压缩之后：应恢复压缩前的完整消息列表，而非截断后的索引。"""
+        s = InterviewSession("mock", questions=["Q1"])
+        state = {"calls": 0}
+
+        def chat_stream(messages, **kwargs):
+            state["calls"] += 1
+            if state["calls"] == 1:
+                return iter(["（mock）"])
+
+            def exploding():
+                yield "部分点评"
+                raise RuntimeError("网络中断")
+
+            return exploding()
+
+        with (
+            mock.patch("app.agent.coach.db.fts_search", return_value=[]),
+            mock.patch("app.agent.coach.llm.chat_stream", side_effect=chat_stream),
+        ):
+            list(s.handle_stream("自我介绍：我是张三，3年后端"))  # 出题流正常
+            # 预置超长历史，确保 _maybe_compact 在流式调用前触发压缩
+            s.messages = s.messages[:1] + [
+                {"role": "user", "content": f"历史消息{i}"}
+                for i in range(coach.MAX_CONTEXT_MESSAGES + 6)
+            ]
+            prev_messages = list(s.messages)
+            prev_answers = len(s.answers)
+            g = s.handle_stream(LONG_ANSWER)  # 点评+追问：压缩后流中途抛异常
+            with self.assertRaises(RuntimeError):
+                for _ in g:
+                    pass
+        self.assertEqual(s.messages, prev_messages, "异常后应恢复压缩前的完整消息列表")
+        self.assertEqual(len(s.answers), prev_answers, "异常后不应残留重复的答案记录")
+        self.assertEqual(s.turn, "answering")
+        self.assertEqual(s.followup_count, 0)
+
     def test_input_truncated(self):
         s = InterviewSession("coach")
         long_text = "x" * 5000
@@ -232,9 +337,7 @@ class ReferenceAnswerTests(unittest.TestCase):
 
     def test_mianshiya_backfill_failure_returns_none(self):
         row = {"id": 3, "source": "mianshiya", "source_id": "42", "answer": None}
-        with mock.patch(
-            "app.crawler.mianshiya.MianShiYaAdapter", side_effect=RuntimeError("boom")
-        ):
+        with mock.patch("app.crawler.mianshiya.MianShiYaAdapter", side_effect=RuntimeError("boom")):
             self.assertIsNone(coach._ensure_reference_answer(row))
 
     def test_comment_injects_reference_answer(self):

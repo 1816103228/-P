@@ -43,7 +43,9 @@ LAZY_CRAWL_LIMIT = int(os.getenv("LAZY_CRAWL_LIMIT", "40"))  # 每分类最多�
 LAZY_CRAWL_TIMEOUT = float(os.getenv("LAZY_CRAWL_TIMEOUT", "30"))  # 补抓总超时（秒）
 
 # ---- 数据清洗（clean_status 状态机：raw→rule_cleaned→semantic_cleaned→ready）----
-CLEAN_RULE_VERSION = os.getenv("CLEAN_RULE_VERSION", "2026.08.17").strip()  # 清洗规则版本号，升级后旧版本数据重洗
+CLEAN_RULE_VERSION = os.getenv(
+    "CLEAN_RULE_VERSION", "2026.08.17"
+).strip()  # 清洗规则版本号，升级后旧版本数据重洗
 CLEAN_SEMANTIC_BATCH_LIMIT = int(
     os.getenv("CLEAN_SEMANTIC_BATCH_LIMIT", "100")
 )  # 单次语义清洗最多打标条数（控制 LLM 成本）

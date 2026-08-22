@@ -30,9 +30,7 @@ _credentials_exc = HTTPException(
 def hash_password(password: str) -> str:
     """生成 pbkdf2 密码散列：pbkdf2$iterations$salt_hex$hash_hex。"""
     salt = secrets.token_bytes(16)
-    digest = hashlib.pbkdf2_hmac(
-        "sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS
-    )
+    digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, _PBKDF2_ITERATIONS)
     return f"pbkdf2${_PBKDF2_ITERATIONS}${salt.hex()}${digest.hex()}"
 
 
@@ -44,9 +42,7 @@ def verify_password(password: str, stored: str) -> bool:
             return False
         salt = bytes.fromhex(salt_hex)
         expected = bytes.fromhex(hash_hex)
-        digest = hashlib.pbkdf2_hmac(
-            "sha256", password.encode("utf-8"), salt, int(iterations)
-        )
+        digest = hashlib.pbkdf2_hmac("sha256", password.encode("utf-8"), salt, int(iterations))
         return hmac.compare_digest(digest, expected)
     except (ValueError, TypeError):
         return False
