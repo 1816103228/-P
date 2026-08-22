@@ -696,7 +696,7 @@ async def spa_fallback(full_path: str):
         return JSONResponse({"detail": "Not Found"}, status_code=404)
     if full_path:
         candidate = (_FRONTEND_DIST / full_path).resolve()
-        if candidate.is_file() and str(candidate).startswith(str(_FRONTEND_DIST.resolve())):
+        if candidate.is_file() and candidate.is_relative_to(_FRONTEND_DIST.resolve()):
             return FileResponse(candidate)
     index = _FRONTEND_DIST / "index.html"
     if index.is_file():
