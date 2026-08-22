@@ -413,6 +413,9 @@ class InterviewSession:
         if self.turn == "answering":
             if self.current_q is None:
                 return (yield from self._ask_next_question_stream())
+            prev_answers = len(self.answers)
+            prev_messages = self.messages[:]
+            prev_turn, prev_followup = self.turn, self.followup_count
             self.answers.append(
                 {
                     "stage": self._stage_name(),
@@ -433,7 +436,6 @@ class InterviewSession:
             self.messages.append({"role": "user", "content": content})
             # 先提交状态再流式：即使被语音打断（barge-in），下一句也会正确按"追问回答"路由
             # 若流式调用或迭代中途抛异常，需回滚状态与消息，避免会话卡死
-            prev_turn, prev_followup = self.turn, self.followup_count
             self.followup_count = 1
             self.turn = "followup"
             self.messages.append({"role": "assistant", "content": ""})
@@ -445,14 +447,15 @@ class InterviewSession:
                     yield delta
             except Exception:
                 self.turn, self.followup_count = prev_turn, prev_followup
-                self.messages.pop()
+                del self.answers[prev_answers:]
+                self.messages = prev_messages
                 raise
             msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
             return msg["content"]
 
         if self.turn == "followup":
             prev_followup = self.followup_count
-            prev_msgs = len(self.messages)
+            prev_messages = self.messages[:]
             self.messages.append({"role": "user", "content": f"（追问的回答）{user_text}"})
             if self.followup_count < MAX_FOLLOWUPS and _is_shallow_answer(user_text):
                 self.followup_count += 1
@@ -472,7 +475,7 @@ class InterviewSession:
                         yield delta
                 except Exception:
                     self.followup_count = prev_followup
-                    del self.messages[prev_msgs:]
+                    self.messages = prev_messages
                     raise
                 msg["content"] = msg["content"].strip() or NO_REPLY_FALLBACK
                 return msg["content"]
